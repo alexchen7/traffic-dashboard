@@ -1,0 +1,9 @@
+# runtime / secrets — never publish these
+config.json
+*.db
+*.db-wal
+*.db-shm
+PASSWORD.txt
+dash_password.txt
+__pycache__/
+*.pyc

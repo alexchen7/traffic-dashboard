@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Traffic Dashboard — Sign in</title>
+<style>
+:root{--bg:#0b0e14;--panel:#12161f;--border:#1f2635;--text:#e6e9f0;--muted:#8a93a6;--accent:#4da3ff;--accent2:#2dd4a7}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:radial-gradient(900px 500px at 70% -10%,#14223a 0%,var(--bg) 60%);color:var(--text);
+  font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center}
+.box{background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:36px 34px;width:340px;
+  box-shadow:0 10px 40px rgba(0,0,0,.45)}
+.logo{width:44px;height:44px;border-radius:11px;background:linear-gradient(135deg,var(--accent),var(--accent2));
+  display:flex;align-items:center;justify-content:center;font-weight:800;color:#08101e;font-size:21px;margin:0 auto 16px}
+h1{font-size:1.1rem;text-align:center;font-weight:650}
+p{color:var(--muted);font-size:.8rem;text-align:center;margin:6px 0 22px}
+input{width:100%;background:#161b26;border:1px solid var(--border);border-radius:9px;color:var(--text);
+  padding:11px 13px;font-size:.95rem;margin-bottom:14px}
+input:focus{outline:none;border-color:var(--accent)}
+button{width:100%;padding:11px;border:none;border-radius:9px;background:linear-gradient(135deg,#2563eb,#1d4ed8);
+  color:#fff;font-size:.95rem;font-weight:600;cursor:pointer}
+button:hover{filter:brightness(1.15)}
+.err{color:#ff5d73;font-size:.8rem;text-align:center;margin-top:12px;min-height:1em}
+</style>
+</head>
+<body>
+<form class="box" onsubmit="go(event)">
+  <div class="logo">Tf</div>
+  <h1>Traffic Dashboard</h1>
+  <p>relay &amp; exit node monitoring</p>
+  <input type="password" id="pw" placeholder="Password" autofocus autocomplete="current-password">
+  <button>Sign in</button>
+  <div class="err" id="err"></div>
+</form>
+<script>
+async function go(e){e.preventDefault();
+  const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({password:document.getElementById('pw').value})});
+  if(r.ok){location.reload()}else{const j=await r.json().catch(()=>({}));
+    document.getElementById('err').textContent=j.error||'Login failed'}}
+</script>
+</body>
+</html>

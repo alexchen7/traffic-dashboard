@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en" data-theme="midnight">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Traffic Dashboard</title>
+<script src="/static/chart.umd.js"></script>
+<style>
+/* ---------- themes ---------- */
+html[data-theme="midnight"]{--bg:#0b0e14;--glow:#14223a;--panel:#12161f;--panel2:#161b26;--border:#1f2635;
+  --text:#e6e9f0;--muted:#8a93a6;--accent:#4da3ff;--accent2:#2dd4a7;--danger:#ff5d73;--warn:#ffb454;
+  --grid:#171d2a;--tick:#5f6b82;--chip-on-bg:#173049;--chip-on-tx:#cfe6ff;--btn-grad1:#2563eb;--btn-grad2:#1d4ed8;--logo-tx:#08101e;--shadow:rgba(0,0,0,.25)}
+html[data-theme="daylight"]{--bg:#f4f6fa;--glow:#dde7f5;--panel:#ffffff;--panel2:#f0f3f8;--border:#dbe2ec;
+  --text:#1c2333;--muted:#66718a;--accent:#2469d4;--accent2:#0d9d78;--danger:#d43a52;--warn:#c77c17;
+  --grid:#e8edf4;--tick:#8b95a8;--chip-on-bg:#dceafe;--chip-on-tx:#1c4d9e;--btn-grad1:#2563eb;--btn-grad2:#1d4ed8;--logo-tx:#fff;--shadow:rgba(30,50,90,.08)}
+html[data-theme="nord"]{--bg:#2e3440;--glow:#3b4252;--panel:#3b4252;--panel2:#434c5e;--border:#4c566a;
+  --text:#eceff4;--muted:#9aa5b8;--accent:#88c0d0;--accent2:#a3be8c;--danger:#bf616a;--warn:#ebcb8b;
+  --grid:#434c5e;--tick:#8f9bb0;--chip-on-bg:#4c566a;--chip-on-tx:#eceff4;--btn-grad1:#5e81ac;--btn-grad2:#4c6a92;--logo-tx:#2e3440;--shadow:rgba(0,0,0,.3)}
+html[data-theme="dracula"]{--bg:#21222c;--glow:#2d2440;--panel:#282a36;--panel2:#313342;--border:#44475a;
+  --text:#f8f8f2;--muted:#8f93a8;--accent:#bd93f9;--accent2:#50fa7b;--danger:#ff5555;--warn:#f1fa8c;
+  --grid:#313342;--tick:#7a7f96;--chip-on-bg:#44475a;--chip-on-tx:#f8f8f2;--btn-grad1:#bd93f9;--btn-grad2:#9b6cf0;--logo-tx:#21222c;--shadow:rgba(0,0,0,.35)}
+html[data-theme="solar"]{--bg:#fdf6e3;--glow:#f3e9cd;--panel:#fbf1d8;--panel2:#f3e9cd;--border:#e3d8b8;
+  --text:#4a4536;--muted:#93885f;--accent:#268bd2;--accent2:#859900;--danger:#dc322f;--warn:#b58900;
+  --grid:#eee5c8;--tick:#a49a72;--chip-on-bg:#e7dcba;--chip-on-tx:#4a4536;--btn-grad1:#268bd2;--btn-grad2:#1c6ea8;--logo-tx:#fdf6e3;--shadow:rgba(120,100,40,.1)}
+html[data-theme="ocean"]{--bg:#06222b;--glow:#0a3d4a;--panel:#0a2e3a;--panel2:#0e3846;--border:#15505f;
+  --text:#dff5f7;--muted:#7fadb5;--accent:#3ec5e0;--accent2:#5ee6b0;--danger:#ff6b7f;--warn:#ffc76b;
+  --grid:#0e3846;--tick:#5d8f9a;--chip-on-bg:#15505f;--chip-on-tx:#dff5f7;--btn-grad1:#0e7490;--btn-grad2:#0b5c73;--logo-tx:#06222b;--shadow:rgba(0,0,0,.35)}
+:root{font-size:15px}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:radial-gradient(1200px 600px at 80% -10%,var(--glow) 0%,var(--bg) 55%);color:var(--text);
+  font-family:'Segoe UI',system-ui,-apple-system,sans-serif;min-height:100vh;padding:22px 26px 40px;transition:background .3s,color .3s}
+.top{display:flex;align-items:center;gap:12px;margin-bottom:18px;flex-wrap:wrap}
+.logo{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--accent2));
+  display:flex;align-items:center;justify-content:center;font-weight:800;color:var(--logo-tx);font-size:17px}
+h1{font-size:1.22rem;font-weight:650}
+.sub{color:var(--muted);font-size:.78rem;margin-top:2px}
+.spacer{flex:1}
+.badge{font-size:.74rem;color:var(--muted);border:1px solid var(--border);border-radius:99px;padding:4px 11px;background:var(--panel2)}
+.badge b{color:var(--text);font-weight:600}
+button{cursor:pointer;border:1px solid var(--border);background:var(--panel2);color:var(--text);
+  border-radius:8px;padding:7px 13px;font-size:.82rem;transition:.15s}
+button:hover{border-color:var(--accent);color:var(--accent)}
+button.primary{background:linear-gradient(135deg,var(--btn-grad1),var(--btn-grad2));border:none;color:#fff}
+button.primary:hover{filter:brightness(1.12);color:#fff}
+button.danger:hover{border-color:var(--danger);color:var(--danger)}
+select,input[type=number],input[type=text],input[type=password]{background:var(--panel2);color:var(--text);
+  border:1px solid var(--border);border-radius:8px;padding:6px 9px;font-size:.8rem}
+select:focus,input:focus{outline:none;border-color:var(--accent)}
+/* server cards */
+.servers{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;margin-bottom:16px}
+.scard{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--border);border-radius:13px;
+  padding:14px 16px;cursor:pointer;transition:.15s;box-shadow:0 4px 16px var(--shadow)}
+.scard:hover{border-color:var(--accent)}
+.scard.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent),0 4px 16px var(--shadow)}
+.scard .row1{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.scard .nm{font-weight:650;font-size:.92rem}
+.kind{font-size:.64rem;text-transform:uppercase;letter-spacing:.7px;padding:2px 8px;border-radius:99px;font-weight:700}
+.kind.relay{background:color-mix(in srgb,var(--accent) 22%,transparent);color:var(--accent)}
+.kind.exit{background:color-mix(in srgb,var(--accent2) 22%,transparent);color:var(--accent2)}
+.kind.client{background:color-mix(in srgb,var(--warn) 24%,transparent);color:var(--warn)}
+.flag-img{width:22px;height:16px;object-fit:cover;border-radius:3px;box-shadow:0 0 0 1px var(--border);vertical-align:middle;flex:0 0 auto}
+.flag-cc{font-size:.6rem;font-weight:700;color:var(--muted);border:1px solid var(--border);border-radius:4px;padding:1px 4px;letter-spacing:.3px}
+.grip{cursor:grab;color:var(--muted);font-size:.9rem;opacity:.55;flex:0 0 auto;user-select:none}
+.grip:hover{opacity:1;color:var(--accent)}
+.scard.drag-over{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent) inset}
+.scard.dragging{opacity:.45}
+.dot{width:8px;height:8px;border-radius:50%;margin-left:auto}
+.ok{background:var(--accent2);box-shadow:0 0 6px var(--accent2)} .bad{background:var(--danger)}
+.scard .use{font-size:1.25rem;font-weight:700}
+.scard .meta{font-size:.72rem;color:var(--muted);margin-top:2px}
+.bar{height:6px;border-radius:5px;background:var(--panel2);border:1px solid var(--border);overflow:hidden;margin-top:8px}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--accent2),var(--accent));transition:width .5s}
+.bar i.hot{background:linear-gradient(90deg,var(--warn),var(--danger))}
+.scard .rates{display:flex;gap:14px;margin-top:8px;font-size:.76rem}
+.up{color:var(--accent2)} .down{color:var(--accent)}
+/* panels */
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:18px;margin-bottom:16px;box-shadow:0 4px 16px var(--shadow)}
+.head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.head h2{font-size:.95rem;font-weight:650;margin-right:6px}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{padding:5px 11px;border-radius:99px;font-size:.76rem;border:1px solid var(--border);background:var(--panel2);color:var(--muted);cursor:pointer;transition:.15s}
+.chip.on{background:var(--chip-on-bg);border-color:var(--accent);color:var(--chip-on-tx)}
+.seg{display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.seg button{border:none;border-radius:0;padding:6px 12px;background:transparent;font-size:.78rem;color:var(--muted)}
+.seg button.on{background:var(--accent);color:var(--logo-tx);font-weight:600}
+.chartbox{position:relative;height:320px}
+.chartbox.short{height:240px}
+table{width:100%;border-collapse:collapse;font-size:.85rem}
+th{color:var(--muted);font-weight:600;text-align:left;padding:8px 10px;font-size:.72rem;text-transform:uppercase;letter-spacing:.6px;border-bottom:1px solid var(--border)}
+td{padding:9px 10px;border-bottom:1px solid var(--grid)}
+tr:hover td{background:var(--panel2)}
+.pctbar{width:100px;height:6px;background:var(--panel2);border:1px solid var(--border);border-radius:4px;overflow:hidden;display:inline-block;vertical-align:middle;margin-right:8px}
+.pctbar i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2))}
+.name-in{background:transparent;border:1px solid transparent;color:var(--text);padding:3px 6px;border-radius:6px;width:150px;font-size:.85rem}
+.name-in:focus{border-color:var(--accent);outline:none;background:var(--panel2)}
+.mono{font-variant-numeric:tabular-nums}
+.xbtn{border:none;background:none;color:var(--muted);cursor:pointer;font-size:.9rem;padding:2px 6px}
+.xbtn:hover{color:var(--danger)}
+/* modal */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:50}
+.overlay.show{display:flex}
+.modal{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:24px;width:380px;max-height:88vh;overflow:auto}
+.modal h2{font-size:1rem;margin-bottom:6px}
+.modal h3{font-size:.8rem;color:var(--muted);margin:18px 0 4px;text-transform:uppercase;letter-spacing:.6px}
+.modal label{display:block;font-size:.78rem;color:var(--muted);margin:10px 0 4px}
+.modal input,.modal select{width:100%}
+.modal .row{display:flex;gap:10px;justify-content:flex-end;margin-top:18px}
+.modal .hint{font-size:.72rem;color:var(--muted);margin-top:4px}
+hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
+.toast{position:fixed;bottom:24px;right:24px;background:var(--chip-on-bg);border:1px solid var(--accent);color:var(--chip-on-tx);
+  padding:10px 18px;border-radius:10px;font-size:.85rem;opacity:0;transition:.3s;pointer-events:none;z-index:60}
+.toast.show{opacity:1}
+.addport{display:flex;gap:8px;align-items:center}
+.addport input{width:110px}
+@media(max-width:700px){body{padding:14px}.chartbox{height:240px}}
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="logo">Tf</div>
+  <div>
+    <h1>Traffic Dashboard</h1>
+    <div class="sub" id="sub-line">multi-server monitor</div>
+  </div>
+  <div class="spacer"></div>
+  <span class="badge" id="tz-badge">TZ <b>–</b></span>
+  <span class="badge" id="clock">–</span>
+  <select id="theme-sel" title="Theme">
+    <option value="midnight">Midnight</option><option value="daylight">Daylight</option>
+    <option value="nord">Nord</option><option value="dracula">Dracula</option>
+    <option value="solar">Solar Dawn</option><option value="ocean">Ocean</option>
+  </select>
+  <button onclick="openSettings()">&#9881; Settings</button>
+  <button onclick="logout()">Sign out</button>
+</div>
+
+<div class="servers" id="server-cards"></div>
+
+<div class="panel">
+  <div class="head">
+    <h2>Bandwidth</h2>
+    <div class="chips" id="entity-chips"></div>
+    <div class="spacer"></div>
+    <div class="seg" id="bw-range"></div>
+    <select id="bw-gran">
+      <option value="auto">Auto</option><option value="10s">10 sec</option>
+      <option value="1m">1 min</option><option value="1h">1 hour</option><option value="1d">1 day</option>
+    </select>
+  </div>
+  <div class="chartbox"><canvas id="speedChart"></canvas></div>
+</div>
+
+<div class="panel">
+  <div class="head">
+    <h2>Data used</h2><span class="sub" id="usage-note"></span>
+    <div class="spacer"></div>
+    <div class="seg" id="us-range"></div>
+    <select id="us-gran">
+      <option value="auto">Auto</option><option value="10s">10 sec</option>
+      <option value="1m">1 min</option><option value="1h">1 hour</option><option value="1d">1 day</option>
+    </select>
+  </div>
+  <div class="chartbox short"><canvas id="usageChart"></canvas></div>
+</div>
+
+<div class="panel">
+  <div class="head">
+    <h2 id="ports-title">Monitored ports — this period</h2>
+    <div class="spacer"></div>
+    <div class="addport">
+      <input type="number" id="add-port" placeholder="port #" min="1" max="65535">
+      <button onclick="addPort()">+ Monitor port</button>
+    </div>
+  </div>
+  <table>
+    <thead><tr><th>Name</th><th>Port</th><th>Upload &#8593;</th><th>Download &#8595;</th><th>Total</th><th>Share</th><th>Live</th><th></th></tr></thead>
+    <tbody id="port-rows"></tbody>
+  </table>
+</div>
+
+<div class="overlay" id="settings-ov">
+  <div class="modal">
+    <h2 id="set-title">Settings</h2>
+    <div class="sub" id="set-sub"></div>
+    <h3>Server</h3>
+    <label>Display name</label>
+    <input type="text" id="set-name" maxlength="48" placeholder="e.g. Tokyo Exit">
+    <div class="hint">Leave empty to restore the default name.</div>
+    <h3>Traffic period</h3>
+    <label>Monthly reset day (1–28)</label>
+    <input type="number" id="set-reset" min="1" max="28">
+    <label>Reset time zone</label>
+    <select id="set-tz"></select>
+    <div class="hint">Daily buckets and the monthly reset boundary use this zone. Reset happens at 00:00 in this zone.</div>
+    <label>Monthly quota (GB, 0 = unlimited)</label>
+    <input type="number" id="set-quota" min="0" step="10">
+    <div class="row">
+      <button onclick="closeSettings()">Close</button>
+      <button class="primary" onclick="saveSettings()">Save server settings</button>
+    </div>
+    <hr class="sep">
+    <h3>Dashboard password</h3>
+    <label>Current password</label>
+    <input type="password" id="pw-cur" autocomplete="current-password">
+    <label>New password (min 8 chars)</label>
+    <input type="password" id="pw-new" autocomplete="new-password">
+    <label>Confirm new password</label>
+    <input type="password" id="pw-new2" autocomplete="new-password">
+    <div class="row"><button class="primary" onclick="changePassword()">Change password</button></div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $=id=>document.getElementById(id);
+let OV=null, sel=null, entity=null;
+let bwRange=3600, bwGran='auto', usRange=86400, usGran='auto', dragId=null;
+let speedChart=null, usageChart=null;
+const RANGES=[['1h',3600],['6h',21600],['24h',86400],['7d',604800],['30d',2592000]];
+
+/* ---------- theme ---------- */
+const themeSel=$('theme-sel');
+const savedTheme=localStorage.getItem('td_theme')||'midnight';
+document.documentElement.dataset.theme=savedTheme;themeSel.value=savedTheme;
+themeSel.addEventListener('change',()=>{document.documentElement.dataset.theme=themeSel.value;
+  localStorage.setItem('td_theme',themeSel.value);rebuildCharts()});
+function cssv(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim()}
+
+function flagEmoji(cc){if(!cc||cc.length!==2)return'';
+  return String.fromCodePoint(...[...cc.toUpperCase()].map(c=>0x1F1E6+c.charCodeAt(0)-65))}
+function fmtB(b){if(b==null)return'–';const u=['B','KB','MB','GB','TB'];let i=0;while(b>=1024&&i<4){b/=1024;i++}return b.toFixed(b>=100||i==0?0:b>=10?1:2)+' '+u[i]}
+function fmtRate(bps){const bits=bps*8;const u=['bps','Kbps','Mbps','Gbps'];let i=0,v=bits;while(v>=1000&&i<3){v/=1000;i++}return v.toFixed(v>=100?0:v>=10?1:2)+' '+u[i]}
+function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2400)}
+function autoBw(r){return r<=3600?'10s':r<=86400?'1m':'1h'}
+function autoUs(r){return r<=3600?'1m':r<=86400?'1h':'1d'}
+async function api(p,opt){const r=await fetch(p,opt);if(r.status===401){location.reload();throw 0}return r}
+
+function seg(el,cur,cb){el.innerHTML='';RANGES.forEach(([lbl,sec])=>{const b=document.createElement('button');
+  b.textContent=lbl;b.className=sec===cur?'on':'';b.onclick=()=>cb(sec);el.appendChild(b)})}
+function buildSegs(){seg($('bw-range'),bwRange,s=>{bwRange=s;buildSegs();refreshSpeed()});
+  seg($('us-range'),usRange,s=>{usRange=s;buildSegs();refreshUsage()})}
+
+function srv(){return OV?OV.servers.find(s=>s.id===sel):null}
+
+function buildServerCards(){
+  const box=$('server-cards');box.innerHTML='';
+  OV.servers.forEach(s=>{
+    const used=s.usage.total,q=s.quota_bytes;
+    const pct=q?Math.min(100,100*used/q):0;
+    const r=s.rate;
+    const healthy=OV.now-s.health_last<60;
+    const d=document.createElement('div');
+    d.className='scard'+(s.id===sel?' sel':'');
+    d.draggable=true;
+    d.dataset.sid=s.id;
+    d.addEventListener('dragstart',e=>{dragId=s.id;d.classList.add('dragging');e.dataTransfer.effectAllowed='move'});
+    d.addEventListener('dragend',()=>{dragId=null;d.classList.remove('dragging');document.querySelectorAll('.scard.drag-over').forEach(x=>x.classList.remove('drag-over'))});
+    d.addEventListener('dragover',e=>{if(dragId&&dragId!==s.id){e.preventDefault();d.classList.add('drag-over')}});
+    d.addEventListener('dragleave',()=>d.classList.remove('drag-over'));
+    d.addEventListener('drop',e=>{e.preventDefault();d.classList.remove('drag-over');dropOnServer(s.id)});
+    d.onclick=()=>{sel=s.id;entity=s.id;buildServerCards();buildChips();refreshCharts();renderPorts();updateTz()};
+    const cc=(s.country_code||'').toLowerCase();
+    const flagHtml=cc?`<img class="flag-img" src="https://flagcdn.com/32x24/${cc}.png" srcset="https://flagcdn.com/64x48/${cc}.png 2x" alt="${s.country_code}" title="${s.country||''} (${s.geo_ip||''})" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'flag-cc',textContent:this.alt}))">`:'';
+    d.innerHTML=`<div class="row1"><span class="grip" title="Drag to reorder">&#x2630;</span>${flagHtml}<span class="nm">${s.name}</span>
+        <span class="kind ${s.kind}">${s.kind}</span><span class="dot ${healthy?'ok':'bad'}" title="collector"></span></div>
+      <div class="use">${fmtB(used)}</div>
+      <div class="meta">${q?pct.toFixed(1)+'% of '+fmtB(q):'no quota'} · resets day ${s.settings.reset_day} · ${s.period.days_left}d left</div>
+      ${q?`<div class="bar"><i class="${pct>85?'hot':''}" style="width:${pct}%"></i></div>`:''}
+      <div class="rates"><span class="down">↓ ${r?fmtRate(r.in):'–'}</span><span class="up">↑ ${r?fmtRate(r.out):'–'}</span></div>`;
+    box.appendChild(d)})}
+
+function dropOnServer(targetId){
+  if(!dragId||dragId===targetId)return;
+  let ids=OV.servers.map(s=>s.id).filter(x=>x!==dragId);
+  ids.splice(ids.indexOf(targetId),0,dragId);
+  saveOrder(ids);
+}
+async function saveOrder(ids){
+  // optimistic: reorder in place so it feels instant
+  OV.servers.sort((a,b)=>ids.indexOf(a.id)-ids.indexOf(b.id));
+  buildServerCards();
+  await api('/api/order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order:ids})});
+  toast('Order saved');
+  loadOverview(false);
+}
+
+function buildChips(){
+  const box=$('entity-chips');box.innerHTML='';const s=srv();if(!s)return;
+  const items=[[s.id,'Total'],...s.ports.map(p=>[`${s.id}:port:${p.port}`,p.name])];
+  items.forEach(([id,lbl])=>{const c=document.createElement('span');c.className='chip'+(id===entity?' on':'');
+    c.textContent=lbl;c.title=id;c.onclick=()=>{entity=id;buildChips();refreshCharts()};box.appendChild(c)})}
+
+function chartOpts(fmt,rangeSec){return{responsive:true,maintainAspectRatio:false,animation:false,
+  interaction:{mode:'index',intersect:false},
+  plugins:{legend:{labels:{color:cssv('--muted'),boxWidth:12,font:{size:11}}},
+    tooltip:{backgroundColor:cssv('--panel2'),borderColor:cssv('--border'),borderWidth:1,
+      titleColor:cssv('--text'),bodyColor:cssv('--text'),
+      callbacks:{title:items=>new Date(items[0].parsed.x*1000).toLocaleString(),
+                 label:c=>c.dataset.label+': '+fmt(c.parsed.y)}}},
+  scales:{x:{type:'linear',min:Math.floor(Date.now()/1000)-rangeSec,max:Math.floor(Date.now()/1000),
+      ticks:{color:cssv('--tick'),maxTicksLimit:8,font:{size:10},
+      callback:v=>{const d=new Date(v*1000);return rangeSec<=86400?d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):d.toLocaleDateString([],{month:'short',day:'numeric'})}},
+      grid:{color:cssv('--grid')}},
+    y:{beginAtZero:true,ticks:{color:cssv('--tick'),font:{size:10},callback:v=>fmt(v)},grid:{color:cssv('--grid')}}}}}
+
+async function refreshSpeed(){
+  if(!entity)return;
+  const g=bwGran==='auto'?autoBw(bwRange):bwGran;
+  const d=await (await api(`/api/series?entity=${entity}&gran=${g}&range=${bwRange}`)).json();
+  const mk=(idx,color)=>({data:d.points.map(p=>({x:p[0],y:p[idx]/d.bucket})),borderColor:color,
+    backgroundColor:color.replace(')',' / .12)').replace('rgb','rgb'),fill:true,pointRadius:0,borderWidth:1.6,tension:.25});
+  const cIn=cssv('--accent2'),cOut=cssv('--accent');
+  const ds=[Object.assign(mk(1,hexRgb(cIn)),{label:'Inbound'}),Object.assign(mk(2,hexRgb(cOut)),{label:'Outbound'})];
+  if(speedChart)speedChart.destroy();
+  speedChart=new Chart($('speedChart'),{type:'line',data:{datasets:ds},options:chartOpts(fmtRate,bwRange)})}
+
+async function refreshUsage(){
+  if(!entity)return;
+  const g=usGran==='auto'?autoUs(usRange):usGran;
+  const d=await (await api(`/api/series?entity=${entity}&gran=${g}&range=${usRange}`)).json();
+  const s=srv();
+  const nm=entity===s.id?'Total':(s.ports.find(p=>`${s.id}:port:${p.port}`===entity)||{}).name||entity;
+  $('usage-note').textContent=`${nm} · per ${ {'10s':'10 sec','1m':'minute','1h':'hour','1d':'day'}[g] }`;
+  const cIn=hexRgb(cssv('--accent2')),cOut=hexRgb(cssv('--accent'));
+  const ds=[{label:'In',data:d.points.map(p=>({x:p[0],y:p[1]})),backgroundColor:cIn.replace(')',' / .75)'),stack:'s'},
+            {label:'Out',data:d.points.map(p=>({x:p[0],y:p[2]})),backgroundColor:cOut.replace(')',' / .75)'),stack:'s'}];
+  if(usageChart)usageChart.destroy();
+  usageChart=new Chart($('usageChart'),{type:'bar',data:{datasets:ds},options:chartOpts(fmtB,usRange)})}
+
+function hexRgb(h){h=h.replace('#','');if(h.length===3)h=h.split('').map(c=>c+c).join('');
+  return`rgb(${parseInt(h.slice(0,2),16)} ${parseInt(h.slice(2,4),16)} ${parseInt(h.slice(4,6),16)})`}
+
+function refreshCharts(){refreshSpeed();refreshUsage()}
+function rebuildCharts(){refreshCharts()}
+
+function renderPorts(){
+  const s=srv();if(!s)return;
+  $('ports-title').textContent=`Monitored ports on ${s.name} — this period`;
+  const tb=$('port-rows');tb.innerHTML='';
+  [...s.ports].sort((a,b)=>b.total-a.total).forEach(p=>{
+    const r=OV.rates[`${s.id}:port:${p.port}`];
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td><input class="name-in" value="${p.name.replace(/"/g,'&quot;')}" data-port="${p.port}"></td>
+      <td class="mono">${p.port}</td><td class="mono up">${fmtB(p.in)}</td><td class="mono down">${fmtB(p.out)}</td>
+      <td class="mono"><b>${fmtB(p.total)}</b></td>
+      <td><span class="pctbar"><i style="width:${p.pct}%"></i></span><span class="mono" style="color:var(--muted);font-size:.76rem">${p.pct}%</span></td>
+      <td class="mono" style="font-size:.76rem;color:var(--muted)">${r&&(r.in||r.out)?'↓'+fmtRate(r.out)+' ↑'+fmtRate(r.in):'idle'}</td>
+      <td><button class="xbtn" title="Stop monitoring this port" onclick="removePort(${p.port})">✕</button></td>`;
+    tb.appendChild(tr)});
+  tb.querySelectorAll('.name-in').forEach(inp=>{
+    inp.addEventListener('change',async()=>{
+      await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({server:sel,port_names:{[inp.dataset.port]:inp.value}})});
+      toast('Name saved');loadOverview(false)})})}
+
+async function addPort(){
+  const v=parseInt($('add-port').value);const s=srv();
+  if(!v||v<1||v>65535){toast('Enter a valid port');return}
+  const st=s.settings;
+  const inc=[...new Set([...(st.ports_include||[]),v])];
+  const exc=(st.ports_exclude||[]).filter(p=>p!==v);
+  await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({server:sel,ports_include:inc,ports_exclude:exc})});
+  $('add-port').value='';toast(`Port ${v} will appear after the next sample (~10s)`);
+  setTimeout(()=>loadOverview(false),12000);loadOverview(false)}
+
+async function removePort(port){
+  const s=srv();const st=s.settings;
+  const inc=(st.ports_include||[]).filter(p=>p!==port);
+  const exc=[...new Set([...(st.ports_exclude||[]),port])];
+  await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({server:sel,ports_include:inc,ports_exclude:exc})});
+  toast(`Port ${port} removed from monitoring`);loadOverview(false)}
+
+function updateTz(){
+  const s=srv();if(!s)return;
+  $('tz-badge').innerHTML=`TZ <b>${s.tz_label}</b> · resets day ${s.settings.reset_day}`;
+  $('sub-line').textContent=OV.servers.map(x=>x.name).join(' · ')}
+
+function renderAll(rebuild){
+  buildServerCards();updateTz();renderPorts();
+  if(rebuild)buildChips()}
+
+async function loadOverview(rebuild=true){
+  OV=await (await api('/api/overview')).json();
+  if(!sel){sel=OV.servers[0].id;entity=sel}
+  renderAll(rebuild)}
+
+function openSettings(){
+  const s=srv();$('set-title').textContent=`Settings — ${s.name}`;
+  $('set-sub').textContent=`server id: ${s.id} · ${s.kind}`;
+  $('set-name').value=s.settings.display_name||'';
+  $('set-name').placeholder=s.default_name||'display name';
+  $('set-reset').value=s.settings.reset_day;
+  $('set-quota').value=s.settings.quota_gb;
+  const tzs=$('set-tz');tzs.innerHTML='';
+  for(let o=-12;o<=14;o+=0.5){
+    const opt=document.createElement('option');opt.value=o;
+    const sign=o>=0?'+':'-';const a=Math.abs(o);const hh=String(Math.floor(a)).padStart(2,'0');const mm=a%1?'30':'00';
+    opt.textContent=`UTC${sign}${hh}:${mm}`+(o===8?' (Beijing/Shanghai)':o===9?' (Tokyo)':o===0?' (UTC)':'');
+    tzs.appendChild(opt)}
+  tzs.value=s.settings.tz_offset;
+  $('settings-ov').classList.add('show')}
+function closeSettings(){$('settings-ov').classList.remove('show')}
+
+async function saveSettings(){
+  await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({server:sel,display_name:$('set-name').value,reset_day:+$('set-reset').value,quota_gb:+$('set-quota').value,tz_offset:+$('set-tz').value})});
+  closeSettings();toast('Settings saved');loadOverview(false)}
+
+async function changePassword(){
+  const cur=$('pw-cur').value,nw=$('pw-new').value,nw2=$('pw-new2').value;
+  if(nw!==nw2){toast('New passwords do not match');return}
+  const r=await api('/api/password',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({current:cur,new:nw})});
+  const j=await r.json();
+  if(r.ok){toast('Password changed');$('pw-cur').value=$('pw-new').value=$('pw-new2').value=''}
+  else toast(j.error||'Failed')}
+
+async function logout(){await api('/api/logout',{method:'POST'});location.reload()}
+
+setInterval(()=>{$('clock').textContent=new Date().toLocaleString()},1000);
+$('bw-gran').addEventListener('change',e=>{bwGran=e.target.value;refreshSpeed()});
+$('us-gran').addEventListener('change',e=>{usGran=e.target.value;refreshUsage()});
+buildSegs();
+loadOverview().then(refreshCharts);
+setInterval(()=>loadOverview(false),10000);
+setInterval(refreshCharts,30000);
+</script>
+</body>
+</html>
