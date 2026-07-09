@@ -132,6 +132,14 @@ def ensure(source, include, exclude):
             lines.append(f'add rule ip {TABLE} meter_post tcp sport {p} counter name "out_{p}"')
             lines.append(f'add rule ip {TABLE} meter_post udp sport {p} counter name "out_{p}"')
         sh("nft -f - <<'EOF'\n" + "\n".join(lines) + "\nEOF")
+        # drop counters for ports we no longer monitor (now unreferenced)
+        for name in existing_counters():
+            try:
+                cp = int(name.split("_", 1)[1])
+            except (IndexError, ValueError):
+                continue
+            if cp not in want:
+                sh(f"nft delete counter ip {TABLE} {name}", check=False)
     return ports, names
 
 
@@ -182,11 +190,11 @@ def parse_args(argv):
         a = argv[i]
         if a in ("ensure", "report"):
             mode = a
-        elif a == "--source":
+        elif a == "--source" and i + 1 < len(argv):
             i += 1; source = argv[i]
-        elif a == "--include":
+        elif a == "--include" and i + 1 < len(argv):
             i += 1; include = [int(x) for x in argv[i].split(",") if x.strip().isdigit()]
-        elif a == "--exclude":
+        elif a == "--exclude" and i + 1 < len(argv):
             i += 1; exclude = [int(x) for x in argv[i].split(",") if x.strip().isdigit()]
         i += 1
     return mode, source, include, exclude

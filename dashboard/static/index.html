@@ -228,6 +228,7 @@ function cssv(n){return getComputedStyle(document.documentElement).getPropertyVa
 
 function flagEmoji(cc){if(!cc||cc.length!==2)return'';
   return String.fromCodePoint(...[...cc.toUpperCase()].map(c=>0x1F1E6+c.charCodeAt(0)-65))}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function fmtB(b){if(b==null)return'–';const u=['B','KB','MB','GB','TB'];let i=0;while(b>=1024&&i<4){b/=1024;i++}return b.toFixed(b>=100||i==0?0:b>=10?1:2)+' '+u[i]}
 function fmtRate(bps){const bits=bps*8;const u=['bps','Kbps','Mbps','Gbps'];let i=0,v=bits;while(v>=1000&&i<3){v/=1000;i++}return v.toFixed(v>=100?0:v>=10?1:2)+' '+u[i]}
 function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2400)}
@@ -260,8 +261,8 @@ function buildServerCards(){
     d.addEventListener('drop',e=>{e.preventDefault();d.classList.remove('drag-over');dropOnServer(s.id)});
     d.onclick=()=>{sel=s.id;entity=s.id;buildServerCards();buildChips();refreshCharts();renderPorts();updateTz()};
     const cc=(s.country_code||'').toLowerCase();
-    const flagHtml=cc?`<img class="flag-img" src="https://flagcdn.com/32x24/${cc}.png" srcset="https://flagcdn.com/64x48/${cc}.png 2x" alt="${s.country_code}" title="${s.country||''} (${s.geo_ip||''})" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'flag-cc',textContent:this.alt}))">`:'';
-    d.innerHTML=`<div class="row1"><span class="grip" title="Drag to reorder">&#x2630;</span>${flagHtml}<span class="nm">${s.name}</span>
+    const flagHtml=cc?`<img class="flag-img" src="https://flagcdn.com/32x24/${cc}.png" srcset="https://flagcdn.com/64x48/${cc}.png 2x" alt="${esc(s.country_code)}" title="${esc(s.country)} (${esc(s.geo_ip)})" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'flag-cc',textContent:this.alt}))">`:'';
+    d.innerHTML=`<div class="row1"><span class="grip" title="Drag to reorder">&#x2630;</span>${flagHtml}<span class="nm">${esc(s.name)}</span>
         <span class="kind ${s.kind}">${s.kind}</span><span class="dot ${healthy?'ok':'bad'}" title="collector"></span></div>
       <div class="use">${fmtB(used)}</div>
       <div class="meta">${q?pct.toFixed(1)+'% of '+fmtB(q):'no quota'} · resets day ${s.settings.reset_day} · ${s.period.days_left}d left</div>
@@ -309,7 +310,7 @@ async function refreshSpeed(){
   const d=await (await api(`/api/series?entity=${entity}&gran=${g}&range=${bwRange}`)).json();
   const mk=(idx,color)=>({data:d.points.map(p=>({x:p[0],y:p[idx]/d.bucket})),borderColor:color,
     backgroundColor:color.replace(')',' / .12)').replace('rgb','rgb'),fill:true,pointRadius:0,borderWidth:1.6,tension:.25});
-  const cIn=cssv('--accent2'),cOut=cssv('--accent');
+  const cIn=cssv('--accent'),cOut=cssv('--accent2');
   const ds=[Object.assign(mk(1,hexRgb(cIn)),{label:'Inbound'}),Object.assign(mk(2,hexRgb(cOut)),{label:'Outbound'})];
   if(speedChart)speedChart.destroy();
   speedChart=new Chart($('speedChart'),{type:'line',data:{datasets:ds},options:chartOpts(fmtRate,bwRange)})}
@@ -321,7 +322,7 @@ async function refreshUsage(){
   const s=srv();
   const nm=entity===s.id?'Total':(s.ports.find(p=>`${s.id}:port:${p.port}`===entity)||{}).name||entity;
   $('usage-note').textContent=`${nm} · per ${ {'10s':'10 sec','1m':'minute','1h':'hour','1d':'day'}[g] }`;
-  const cIn=hexRgb(cssv('--accent2')),cOut=hexRgb(cssv('--accent'));
+  const cIn=hexRgb(cssv('--accent')),cOut=hexRgb(cssv('--accent2'));
   const ds=[{label:'In',data:d.points.map(p=>({x:p[0],y:p[1]})),backgroundColor:cIn.replace(')',' / .75)'),stack:'s'},
             {label:'Out',data:d.points.map(p=>({x:p[0],y:p[2]})),backgroundColor:cOut.replace(')',' / .75)'),stack:'s'}];
   if(usageChart)usageChart.destroy();
@@ -340,7 +341,7 @@ function renderPorts(){
   [...s.ports].sort((a,b)=>b.total-a.total).forEach(p=>{
     const r=OV.rates[`${s.id}:port:${p.port}`];
     const tr=document.createElement('tr');
-    tr.innerHTML=`<td><input class="name-in" value="${p.name.replace(/"/g,'&quot;')}" data-port="${p.port}"></td>
+    tr.innerHTML=`<td><input class="name-in" value="${esc(p.name)}" data-port="${p.port}"></td>
       <td class="mono">${p.port}</td><td class="mono up">${fmtB(p.in)}</td><td class="mono down">${fmtB(p.out)}</td>
       <td class="mono"><b>${fmtB(p.total)}</b></td>
       <td><span class="pctbar"><i style="width:${p.pct}%"></i></span><span class="mono" style="color:var(--muted);font-size:.76rem">${p.pct}%</span></td>

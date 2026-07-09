@@ -43,7 +43,7 @@ ask() { # ask "prompt" "default" -> REPLY  (works under `curl | bash`)
 
 fetch() { # fetch <relpath> <dest>
   say "fetching $1"
-  curl -fsSL "${REPO_BASE}/$1" -o "$2" || die "download failed: ${REPO_BASE}/$1"
+  curl -fsSL "${REPO_BASE}/$1" -o "$2" || return 1
 }
 
 check_deps() {
@@ -137,7 +137,7 @@ cmd_dashboard() {
   local http_port="${HTTP_PORT:-15080}"
   if [ ! -f "$DASH_DIR/config.json" ]; then
     local pw hash secret kind
-    pw="$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 16)"
+    pw="$(python3 -c 'import secrets,string;print("".join(secrets.choice(string.ascii_letters+string.digits) for _ in range(16)))')"
     hash="$(printf %s "$pw" | python3 -c 'import hashlib,sys;print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')"
     secret="$(python3 -c 'import secrets;print(secrets.token_hex(32))')"
     kind=exit; [ "$src" = nft ] && kind=relay

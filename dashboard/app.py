@@ -28,6 +28,7 @@ DEFAULT_SRV = {"reset_day": 1, "quota_gb": 0, "tz_offset": 8,
 
 RATES = {}
 RATES_LOCK = threading.Lock()
+SETTINGS_LOCK = threading.Lock()
 XUI_NAMES = {}      # sid -> {port_str: remark}
 HEALTH = {}         # sid -> last ok ts
 GEO = {}            # ip -> {"cc": "US", "country": "United States"}
@@ -83,7 +84,12 @@ def get_settings():
             cur["quota_gb"] = 1024
         cur.update(s["servers"].get(sid, {}))
         s["servers"][sid] = cur
-    order = [sid for sid in (s.get("order") or []) if sid in SERVERS]
+    seen = set()
+    order = []
+    for sid in (s.get("order") or []):
+        if sid in SERVERS and sid not in seen:
+            seen.add(sid)
+            order.append(sid)
     for sid in SERVERS:
         if sid not in order:
             order.append(sid)
@@ -179,31 +185,38 @@ def collector():
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=max(4, len(SERVERS) + 1))
     while True:
         t0 = time.time()
-        settings = get_settings()
-        futs = {}
-        for sid, srv in SERVERS.items():
-            futs[sid] = pool.submit(sample_server, srv, settings["servers"][sid])
-        for sid, fut in futs.items():
+        try:
+            settings = get_settings()
+            futs = {}
+            for sid, srv in SERVERS.items():
+                futs[sid] = pool.submit(sample_server, srv, settings["servers"][sid])
+            for sid, fut in futs.items():
+                try:
+                    r = fut.result(timeout=12)
+                except Exception:
+                    r = None
+                if not r:
+                    continue
+                tzoff = settings["servers"][sid].get("tz_offset", 8)
+                ts = int(time.time())
+                for port, v in r.get("ports", {}).items():
+                    record(c, f"{sid}:port:{port}", ts, v.get("in", 0), v.get("out", 0), last, tzoff)
+                h = r.get("host", {})
+                record(c, sid, ts, h.get("rx", 0), h.get("tx", 0), last, tzoff)
+                if r.get("names"):
+                    XUI_NAMES[sid] = r["names"]
+                HEALTH[sid] = ts
+            save_last(c, last)
+            n += 1
+            if n % 30 == 0:
+                prune(c, int(time.time()))
+            c.commit()
+        except Exception as e:
+            print("collector loop error:", repr(e), file=sys.stderr)
             try:
-                r = fut.result(timeout=12)
+                c.rollback()
             except Exception:
-                r = None
-            if not r:
-                continue
-            tzoff = settings["servers"][sid].get("tz_offset", 8)
-            ts = int(time.time())
-            for port, v in r.get("ports", {}).items():
-                record(c, f"{sid}:port:{port}", ts, v.get("in", 0), v.get("out", 0), last, tzoff)
-            h = r.get("host", {})
-            record(c, sid, ts, h.get("rx", 0), h.get("tx", 0), last, tzoff)
-            if r.get("names"):
-                XUI_NAMES[sid] = r["names"]
-            HEALTH[sid] = ts
-        save_last(c, last)
-        n += 1
-        if n % 30 == 0:
-            prune(c, int(time.time()))
-        c.commit()
+                pass
         time.sleep(max(1, SAMPLE_SEC - (time.time() - t0)))
 
 
@@ -307,10 +320,35 @@ def tz_label(off):
 
 LOGIN_ATTEMPTS = {}
 
+
+def hash_password(pw):
+    salt = secrets.token_hex(16)
+    dk = hashlib.pbkdf2_hmac("sha256", pw.encode(), salt.encode(), 200000).hex()
+    return f"pbkdf2_sha256$200000${salt}${dk}"
+
+
+def verify_password(pw, stored):
+    # New format: pbkdf2_sha256$iters$salt$hash ; legacy: bare sha256 hex.
+    try:
+        if stored.startswith("pbkdf2_sha256$"):
+            _, iters, salt, want = stored.split("$", 3)
+            dk = hashlib.pbkdf2_hmac("sha256", pw.encode(), salt.encode(), int(iters)).hex()
+            return hmac.compare_digest(dk, want)
+        return hmac.compare_digest(hashlib.sha256(pw.encode()).hexdigest(), stored)
+    except Exception:
+        return False
+
+def _token_key():
+    # Binding the signing key to the current password hash means a password
+    # change invalidates every previously issued token.
+    return (CFG["secret"] + "|" + CFG.get("password_hash", "")).encode()
+
+
 def make_token():
     ts = str(int(time.time()))
-    sig = hmac.new(CFG["secret"].encode(), ts.encode(), hashlib.sha256).hexdigest()
-    return f"{ts}.{sig}"
+    nonce = secrets.token_hex(8)
+    sig = hmac.new(_token_key(), f"{ts}.{nonce}".encode(), hashlib.sha256).hexdigest()
+    return f"{ts}.{nonce}.{sig}"
 
 
 def cookie_header(token, max_age=30 * 86400):
@@ -322,8 +360,9 @@ def cookie_header(token, max_age=30 * 86400):
 
 def check_token(tok):
     try:
-        ts, sig = tok.split(".", 1)
-        if not hmac.compare_digest(sig, hmac.new(CFG["secret"].encode(), ts.encode(), hashlib.sha256).hexdigest()):
+        ts, nonce, sig = tok.split(".", 2)
+        expect = hmac.new(_token_key(), f"{ts}.{nonce}".encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expect):
             return False
         return time.time() - int(ts) < 30 * 86400
     except Exception:
@@ -416,15 +455,21 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/login":
             # real client IP (nginx forwards it) so rate-limiting isn't one
             # global 127.0.0.1 bucket behind nginx
-            fwd = self.headers.get("X-Real-IP") or self.headers.get("X-Forwarded-For", "")
-            ip = fwd.split(",")[0].strip() if fwd else self.client_address[0]
+            peer = self.client_address[0]
+            # Only trust forwarded-for headers from the local reverse proxy; a
+            # direct client (--no-nginx on 0.0.0.0) could otherwise spoof them.
+            if peer in ("127.0.0.1", "::1"):
+                fwd = self.headers.get("X-Real-IP") or self.headers.get("X-Forwarded-For", "")
+                ip = fwd.split(",")[0].strip() if fwd else peer
+            else:
+                ip = peer
             att = [t for t in LOGIN_ATTEMPTS.get(ip, []) if time.time() - t < 300]
             if len(att) >= 8:
                 self._send(429, {"error": "too many attempts, wait 5 min"})
                 return
             body = self._body_json() or {}
-            pw = (body.get("password") or "").encode()
-            if hmac.compare_digest(hashlib.sha256(pw).hexdigest(), CFG["password_hash"]):
+            pw = body.get("password") or ""
+            if verify_password(pw, CFG["password_hash"]):
                 LOGIN_ATTEMPTS.pop(ip, None)
                 self._send(200, {"ok": True}, extra={"Set-Cookie": cookie_header(make_token())})
             else:
@@ -440,15 +485,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/password":
             body = self._body_json() or {}
-            cur = (body.get("current") or "").encode()
+            cur = body.get("current") or ""
             new = body.get("new") or ""
-            if not hmac.compare_digest(hashlib.sha256(cur).hexdigest(), CFG["password_hash"]):
+            if not verify_password(cur, CFG["password_hash"]):
                 self._send(403, {"error": "current password is wrong"})
                 return
             if len(new) < 8:
                 self._send(400, {"error": "new password must be at least 8 characters"})
                 return
-            set_password_hash(hashlib.sha256(new.encode()).hexdigest())
+            set_password_hash(hash_password(new))
             self._send(200, {"ok": True})
             return
         if path == "/api/settings":
@@ -457,34 +502,35 @@ class Handler(BaseHTTPRequestHandler):
             if sid not in SERVERS:
                 self._send(400, {"error": "unknown server"})
                 return
-            s = get_settings()
-            st = s["servers"][sid]
-            if "display_name" in body:
-                dn = str(body["display_name"]).strip()[:48]
-                if dn:
-                    st["display_name"] = dn
-                else:
-                    st.pop("display_name", None)
-            if "reset_day" in body:
-                rd = int(body["reset_day"])
-                if 1 <= rd <= 28:
-                    st["reset_day"] = rd
-            if "quota_gb" in body:
-                qg = float(body["quota_gb"])
-                if qg >= 0:
-                    st["quota_gb"] = qg
-            if "tz_offset" in body:
-                tz = float(body["tz_offset"])
-                if -12 <= tz <= 14:
-                    st["tz_offset"] = tz
-            if "port_names" in body and isinstance(body["port_names"], dict):
-                st["port_names"].update({str(k): str(v)[:40] for k, v in body["port_names"].items()
-                                         if re.fullmatch(r"\d+", str(k))})
-            for key in ("ports_include", "ports_exclude"):
-                if key in body and isinstance(body[key], list):
-                    st[key] = sorted({int(p) for p in body[key]
-                                      if str(p).isdigit() and 1 <= int(p) <= 65535})
-            save_settings(s)
+            with SETTINGS_LOCK:
+                s = get_settings()
+                st = s["servers"][sid]
+                if "display_name" in body:
+                    dn = str(body["display_name"]).strip()[:48]
+                    if dn:
+                        st["display_name"] = dn
+                    else:
+                        st.pop("display_name", None)
+                if "reset_day" in body:
+                    rd = int(body["reset_day"])
+                    if 1 <= rd <= 28:
+                        st["reset_day"] = rd
+                if "quota_gb" in body:
+                    qg = float(body["quota_gb"])
+                    if qg >= 0:
+                        st["quota_gb"] = qg
+                if "tz_offset" in body:
+                    tz = float(body["tz_offset"])
+                    if -12 <= tz <= 14:
+                        st["tz_offset"] = tz
+                if "port_names" in body and isinstance(body["port_names"], dict):
+                    st["port_names"].update({str(k): str(v)[:40] for k, v in body["port_names"].items()
+                                             if re.fullmatch(r"\d+", str(k))})
+                for key in ("ports_include", "ports_exclude"):
+                    if key in body and isinstance(body[key], list):
+                        st[key] = sorted({int(p) for p in body[key]
+                                          if str(p).isdigit() and 1 <= int(p) <= 65535})
+                save_settings(s)
             self._send(200, {"ok": True, "settings": st})
             return
         if path == "/api/order":
@@ -494,12 +540,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "order must be a list"})
                 return
             order = [sid for sid in order if sid in SERVERS]
-            if set(order) != set(SERVERS):
+            if len(order) != len(SERVERS) or set(order) != set(SERVERS):
                 self._send(400, {"error": "order must include every server exactly once"})
                 return
-            s = get_settings()
-            s["order"] = order
-            save_settings(s)
+            with SETTINGS_LOCK:
+                s = get_settings()
+                s["order"] = order
+                save_settings(s)
             self._send(200, {"ok": True, "order": order})
             return
         self._send(404, {"error": "not found"})
@@ -543,7 +590,7 @@ class Handler(BaseHTTPRequestHandler):
                 "settings": st, "tz_label": tz_label(st["tz_offset"]),
                 "period": {"start": start, "end": end, "days_left": max(0, round((end - now) / 86400, 1))},
                 "ports": plist,
-                "rate": rates.get(sid),
+                "rate": rates.get(sid) if now - HEALTH.get(sid, 0) < 60 else None,
                 "health_last": HEALTH.get(sid, 0),
             })
         c.close()

@@ -64,7 +64,9 @@ A separate `ip traffic_meter` nft table with accept-policy chains:
 For a forwarded port this equals the user-facing upload/download; the relay's
 NIC total (also tracked, from `/proc/net/dev`) is ~2× the port sum by design.
 Named counters survive rule rebuilds; a oneshot systemd unit recreates the
-table after reboot. Counter resets are handled by the collector.
+table after reboot. Counter resets are handled by the collector. Changing a
+server's time zone only affects future daily buckets, so monthly totals near a
+reset boundary may shift slightly.
 
 Rollups: 10 s kept 6 h → 1 min kept 8 d → 1 h kept 120 d → daily kept forever.
 
