@@ -125,6 +125,7 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
   <div class="spacer"></div>
   <span class="badge" id="tz-badge">TZ <b>–</b></span>
   <span class="badge" id="clock">–</span>
+  <select id="dtz-sel" title="Time zone used for the clock and chart times"></select>
   <select id="theme-sel" title="Theme">
     <option value="midnight">Midnight</option><option value="daylight">Daylight</option>
     <option value="nord">Nord</option><option value="dracula">Dracula</option>
@@ -226,6 +227,34 @@ themeSel.addEventListener('change',()=>{document.documentElement.dataset.theme=t
   localStorage.setItem('td_theme',themeSel.value);rebuildCharts()});
 function cssv(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim()}
 
+/* ---------- display time zone (overrides browser/system TZ for rendering) ---------- */
+const dtzSel=$('dtz-sel');
+let dtz=localStorage.getItem('td_dtz')||'local';
+function offLabel(o){const sign=o>=0?'+':'-';const a=Math.abs(o);
+  return`UTC${sign}${String(Math.floor(a)).padStart(2,'0')}:${a%1?'30':'00'}`}
+(function(){
+  const add=(v,l)=>{const opt=document.createElement('option');opt.value=v;opt.textContent=l;dtzSel.appendChild(opt)};
+  add('local','Browser time');add('server','Server TZ');
+  for(let o=-12;o<=14;o+=0.5)add(String(o),offLabel(o)+(o===0?' (UTC)':o===8?' (Beijing)':o===9?' (Tokyo)':''));
+  if(![...dtzSel.options].some(x=>x.value===dtz))dtz='local';
+  dtzSel.value=dtz;
+})();
+dtzSel.addEventListener('change',()=>{dtz=dtzSel.value;localStorage.setItem('td_dtz',dtz);
+  tickClock();refreshCharts()});
+function dispOff(){ // hours east of UTC, or null = use browser TZ
+  if(dtz==='local')return null;
+  if(dtz==='server'){const s=srv();return s?+s.settings.tz_offset:null}
+  const v=parseFloat(dtz);return isNaN(v)?null:v}
+function dfmt(ts,kind){ // kind: 'time' | 'date' | 'full'
+  const off=dispOff();
+  const d=new Date((ts+(off==null?0:off*3600))*1000);
+  const o=off==null?{}:{timeZone:'UTC'};
+  if(kind==='time')return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',...o});
+  if(kind==='date')return d.toLocaleDateString([],{month:'short',day:'numeric',...o});
+  return d.toLocaleString([],o)}
+function tickClock(){const off=dispOff();
+  $('clock').textContent=dfmt(Date.now()/1000,'full')+(off==null?'':' '+(dtz==='server'?'srv '+offLabel(off):offLabel(off)))}
+
 function flagEmoji(cc){if(!cc||cc.length!==2)return'';
   return String.fromCodePoint(...[...cc.toUpperCase()].map(c=>0x1F1E6+c.charCodeAt(0)-65))}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
@@ -296,11 +325,11 @@ function chartOpts(fmt,rangeSec){return{responsive:true,maintainAspectRatio:fals
   plugins:{legend:{labels:{color:cssv('--muted'),boxWidth:12,font:{size:11}}},
     tooltip:{backgroundColor:cssv('--panel2'),borderColor:cssv('--border'),borderWidth:1,
       titleColor:cssv('--text'),bodyColor:cssv('--text'),
-      callbacks:{title:items=>new Date(items[0].parsed.x*1000).toLocaleString(),
+      callbacks:{title:items=>dfmt(items[0].parsed.x,'full'),
                  label:c=>c.dataset.label+': '+fmt(c.parsed.y)}}},
   scales:{x:{type:'linear',min:Math.floor(Date.now()/1000)-rangeSec,max:Math.floor(Date.now()/1000),
       ticks:{color:cssv('--tick'),maxTicksLimit:8,font:{size:10},
-      callback:v=>{const d=new Date(v*1000);return rangeSec<=86400?d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):d.toLocaleDateString([],{month:'short',day:'numeric'})}},
+      callback:v=>rangeSec<=86400?dfmt(v,'time'):dfmt(v,'date')},
       grid:{color:cssv('--grid')}},
     y:{beginAtZero:true,ticks:{color:cssv('--tick'),font:{size:10},callback:v=>fmt(v)},grid:{color:cssv('--grid')}}}}}
 
@@ -420,7 +449,7 @@ async function changePassword(){
 
 async function logout(){await api('/api/logout',{method:'POST'});location.reload()}
 
-setInterval(()=>{$('clock').textContent=new Date().toLocaleString()},1000);
+setInterval(tickClock,1000);tickClock();
 $('bw-gran').addEventListener('change',e=>{bwGran=e.target.value;refreshSpeed()});
 $('us-gran').addEventListener('change',e=>{usGran=e.target.value;refreshUsage()});
 buildSegs();
