@@ -49,6 +49,63 @@ then run `add-server` on the dashboard host to register it.
 
 **Uninstall** (either role): `bash install.sh uninstall`
 
+## Migration / backup
+
+Export bundles everything portable into one JSON file: registered node configs
+(id, name, kind, SSH conn, port source, public IP), per-server settings (quotas,
+reset days, time zones, port names, include/exclude lists, card order), the geo
+cache, and the full traffic history (all rollup tiers + raw counter state).
+Secrets are deliberately excluded — the dashboard password, cookie secret, and
+the collector's SSH key stay with each installation.
+
+**Web UI**: Settings → Backup & migration → Export data / Import data
+(web import is capped at 128 MB; use the CLI for bigger files).
+
+**CLI** (on the dashboard host):
+
+```bash
+bash /opt/traffic-dash/install.sh export            # -> /root/traffic-dash-export-<ts>.json
+bash /opt/traffic-dash/install.sh import file.json  # stops the service, imports, restarts
+```
+
+Import **merges**: servers, settings, and traffic buckets present in the file
+overwrite matching ones on the target; everything else is kept. Typical
+migration: install a fresh dashboard on the new host, import the file, then
+either copy `/root/.ssh/id_ed25519` from the old host or run
+`ssh-copy-id root@<node>` per node so the collector can reach them. After a web
+import, restart the service (`systemctl restart traffic-dash`) if new nodes
+don't start reporting on their own.
+
+## Long-term archive (optional)
+
+If the dashboard VPS is short on disk, ship old rollups to a bigger server and
+keep only recent data locally. The archive is a ~180-line stdlib service
+(`archive/archive.py`) that owns its own SQLite file — SQLite is never exposed
+over the network directly.
+
+Setup:
+
+```bash
+# on the storage server (prints a token):
+curl -fsSL https://raw.githubusercontent.com/alexchen7/traffic-dashboard/main/install.sh | bash -s -- archive
+# then on the dashboard host (asks for URL + token):
+bash /opt/traffic-dash/install.sh link-archive
+```
+
+How it works: every 10 minutes the dashboard pushes finalized rows (default:
+the `m1` tier) to the archive with idempotent upserts, resuming from the
+archive's own per-entity watermarks. **Pruning never deletes a row the archive
+hasn't confirmed** — if the archive is down, local data is held until shipping
+catches up (watch local disk if the outage is long). When a chart request
+reaches past local retention, the dashboard fetches the missing range from the
+archive and merges it into the response; if the archive is unreachable the
+chart just shows local data. With this in place you can safely drop local m1
+retention to a few days while keeping a year+ of minute-level history.
+
+Security: the bearer token (in each side's `config.json`, mode 600) is the only
+auth — run the archive on a private network / VPN or firewall its port to the
+dashboard host. The token is deliberately excluded from data exports.
+
 ## Requirements
 
 Debian/Ubuntu with systemd, `python3`, `nftables` (installed automatically if
@@ -68,15 +125,20 @@ table after reboot. Counter resets are handled by the collector. Changing a
 server's time zone only affects future daily buckets, so monthly totals near a
 reset boundary may shift slightly.
 
-Rollups: 10 s kept 6 h → 1 min kept 8 d → 1 h kept 120 d → daily kept forever.
+Rollups: 10 s kept 6 h (fixed) → 1 min → 1 h → daily. Retention for the 1-min,
+1-hour and daily tiers is adjustable in Settings → Data retention (defaults
+8 d / 120 d / forever; 0 = forever, max 3650 d). Lowering a value permanently
+deletes older rows within ~5 minutes. Rough cost per port/host per year:
+1-min ≈ 43 MB, 1-hour ≈ 0.7 MB, daily ≈ 0.03 MB.
 
 ## Repo layout
 
 ```
-install.sh                  # one-key installer (dashboard | node | add-server | uninstall)
+install.sh                  # one-key installer (dashboard | node | add-server | export | import | archive | link-archive | uninstall)
 meter/meter.py              # per-server nft counter agent
 dashboard/app.py            # collector + web app (stdlib Python)
 dashboard/static/           # UI (6 themes) + Chart.js
+archive/archive.py          # optional long-term storage service (stdlib Python)
 ```
 
 ## Security notes

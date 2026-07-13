@@ -5,8 +5,16 @@
   SQLite writes serialized in the collector thread).
 - Per-server settings: quota, reset day, timezone offset, port names,
   monitored-port include/exclude.
-- Rollups: s10 (6h), m1 (8d), h1 (120d), d1 (kept forever).
+- Rollups: s10 (6h fixed); m1/h1/d1 retention adjustable in Settings
+  (defaults: m1 8d, h1 120d, d1 forever; 0 = keep forever).
 - Web app on 127.0.0.1:15080 behind nginx TLS (15443).
+- Migration: GET /api/export + POST /api/import (Settings → Backup & migration),
+  or `python3 app.py export [file]` / `python3 app.py import <file>` on the host.
+- Optional remote archive (config.json "archive" key, set up with
+  `install.sh archive` + `install.sh link-archive`): finalized m1/h1/d1 rows
+  are shipped to archive/archive.py on a storage server BEFORE local pruning
+  may delete them; chart requests older than local retention fetch the
+  missing range back from the archive and merge it in transparently.
 """
 import calendar, concurrent.futures, hashlib, hmac, http.cookies, json, os, re, secrets
 import socketserver, sqlite3, subprocess, sys, threading, time
@@ -25,6 +33,10 @@ SERVERS = {s["id"]: s for s in CFG["servers"]}
 
 DEFAULT_SRV = {"reset_day": 1, "quota_gb": 0, "tz_offset": 8,
                "port_names": {}, "ports_include": [], "ports_exclude": []}
+
+# days each rollup tier is kept; 0 = forever (s10 is fixed at 6 hours)
+DEFAULT_RETENTION = {"m1": 8, "h1": 120, "d1": 0}
+RETENTION_MAX_DAYS = 3650
 
 RATES = {}
 RATES_LOCK = threading.Lock()
@@ -94,6 +106,14 @@ def get_settings():
         if sid not in order:
             order.append(sid)
     s["order"] = order
+    ret = dict(DEFAULT_RETENTION)
+    for k, v in (s.get("retention") or {}).items():
+        if k in ret:
+            try:
+                ret[k] = min(max(0, int(v)), RETENTION_MAX_DAYS)
+            except (TypeError, ValueError):
+                pass
+    s["retention"] = ret
     return s
 
 
@@ -172,10 +192,18 @@ def save_last(c, last):
                   (e, ts, bi, bo))
 
 
-def prune(c, now):
+def prune(c, now, retention=None):
+    r = retention or DEFAULT_RETENTION
+    shipped = load_shipped(c) if archive_enabled() else {}
     c.execute("DELETE FROM s10 WHERE ts < ?", (now - 6 * 3600,))
-    c.execute("DELETE FROM m1 WHERE ts < ?", (now - 8 * 86400,))
-    c.execute("DELETE FROM h1 WHERE ts < ?", (now - 120 * 86400,))
+    for t in ("m1", "h1", "d1"):
+        days = int(r.get(t, DEFAULT_RETENTION[t]) or 0)
+        if days > 0:
+            cut = now - days * 86400
+            if archive_enabled() and t in arch_tables():
+                # never delete rows the archive hasn't confirmed receiving
+                cut = min(cut, int(shipped.get(t, 0)))
+            c.execute(f"DELETE FROM {t} WHERE ts < ?", (cut,))
 
 
 def collector():
@@ -209,7 +237,7 @@ def collector():
             save_last(c, last)
             n += 1
             if n % 30 == 0:
-                prune(c, int(time.time()))
+                prune(c, int(time.time()), settings.get("retention"))
             c.commit()
         except Exception as e:
             print("collector loop error:", repr(e), file=sys.stderr)
@@ -316,6 +344,248 @@ def tz_label(off):
     return f"UTC{sign}{hh:02d}:{mm:02d}"
 
 
+# ---------------- remote archive (optional) ----------------
+# config.json:  "archive": {"url": "http://10.0.0.9:15100", "token": "...",
+#                           "ship": ["m1"], "interval_sec": 600}
+# The token lives in config.json (never in the exportable settings blob).
+
+ARCH = CFG.get("archive") or {}
+ARCH_MARGIN = {"m1": 600, "h1": 2 * 3600, "d1": 2 * 86400}  # ship only finalized buckets
+ARCH_BATCH = 5000
+
+
+def archive_enabled():
+    return bool(ARCH.get("url") and ARCH.get("token"))
+
+
+def arch_tables():
+    return [t for t in (ARCH.get("ship") or ["m1"]) if t in ("m1", "h1", "d1")]
+
+
+def arch_req(path, payload=None, timeout=8):
+    import urllib.request
+    req = urllib.request.Request(
+        ARCH["url"].rstrip("/") + path,
+        data=json.dumps(payload).encode() if payload is not None else None,
+        headers={"Authorization": "Bearer " + ARCH["token"], "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode())
+
+
+def load_shipped(c=None):
+    """Per-table 'archive has everything up to this ts' watermarks."""
+    own = c is None
+    if own:
+        c = db()
+    row = c.execute("SELECT v FROM meta WHERE k='archive_shipped'").fetchone()
+    if own:
+        c.close()
+    try:
+        return json.loads(row[0]) if row else {}
+    except Exception:
+        return {}
+
+
+def save_shipped(d):
+    c = db()
+    c.execute("INSERT INTO meta(k,v) VALUES('archive_shipped',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+              (json.dumps(d),))
+    c.commit(); c.close()
+
+
+def archive_ship_once():
+    """Push finalized rows the archive doesn't have yet (resumes from the
+    archive's own per-entity watermarks, idempotent upserts). Returns
+    per-table shipped-up-to timestamps; raises on any failure so the caller
+    keeps the old watermarks and prune keeps holding rows back."""
+    now = int(time.time())
+    shipped = {}
+    c = db()
+    try:
+        for t in arch_tables():
+            wm = arch_req(f"/watermarks?table={t}").get("watermarks") or {}
+            cutoff = now - ARCH_MARGIN[t]
+            for (e,) in c.execute(f"SELECT DISTINCT entity FROM {t}").fetchall():
+                start = int(wm.get(e, -1)) + 1
+                while True:
+                    rows = c.execute(
+                        f"SELECT entity,ts,din,dout FROM {t} WHERE entity=? AND ts>=? AND ts<? ORDER BY ts LIMIT ?",
+                        (e, start, cutoff, ARCH_BATCH)).fetchall()
+                    if not rows:
+                        break
+                    arch_req("/ingest", {"table": t, "rows": [list(r) for r in rows]}, timeout=30)
+                    start = rows[-1][1] + 1
+                    if len(rows) < ARCH_BATCH:
+                        break
+            shipped[t] = cutoff
+    finally:
+        c.close()
+    return shipped
+
+
+def archive_loop():
+    time.sleep(20)
+    while True:
+        try:
+            if archive_enabled():
+                cur = load_shipped()
+                cur.update(archive_ship_once())
+                save_shipped(cur)
+        except Exception as e:
+            print("archive ship error:", e, file=sys.stderr)
+        time.sleep(max(60, int(ARCH.get("interval_sec", 600))))
+
+
+# ---------------- export / import (migration) ----------------
+
+EXPORT_FORMAT = "traffic-dash-export"
+EXPORT_VERSION = 1
+DATA_TABLES = ("s10", "m1", "h1", "d1")
+
+
+def export_payload():
+    """Portable snapshot: node (client machine) configs, per-server settings,
+    geo cache, full traffic history and raw counter state. Secrets
+    (password_hash, secret) are deliberately NOT exported — auth stays with
+    each installation. The collector SSH key isn't exported either; copy
+    /root/.ssh/id_ed25519 or re-run ssh-copy-id per node on the new host."""
+    c = db()
+    data = {t: [list(r) for r in
+                c.execute(f"SELECT entity,ts,din,dout FROM {t} ORDER BY entity,ts")]
+            for t in DATA_TABLES}
+    raw_last = [list(r) for r in c.execute("SELECT entity,ts,bin,bout FROM raw_last")]
+    row = c.execute("SELECT v FROM meta WHERE k='settings'").fetchone()
+    settings = json.loads(row[0]) if row else {"servers": {}}
+    row = c.execute("SELECT v FROM meta WHERE k='geo'").fetchone()
+    geo = json.loads(row[0]) if row else {}
+    c.close()
+    with CFG_LOCK:
+        servers = json.loads(json.dumps(CFG["servers"]))  # deep copy
+    return {"format": EXPORT_FORMAT, "version": EXPORT_VERSION,
+            "exported_at": int(time.time()),
+            "servers": servers, "settings": settings, "geo": geo,
+            "data": data, "raw_last": raw_last}
+
+
+def _clean_server(s):
+    """Validate an imported node config; returns a cleaned dict or None.
+    Strict on id/kind/source/conn so a tampered export file can't smuggle
+    shell metacharacters into the ssh/meter command line."""
+    if not isinstance(s, dict) or not re.fullmatch(r"[a-z0-9_]+", str(s.get("id", ""))):
+        return None
+    if s.get("kind") not in ("relay", "exit", "client"):
+        return None
+    if s.get("source", "none") not in ("nft", "xui", "none"):
+        return None
+    conn = s.get("conn", {})
+    if not isinstance(conn, dict) or conn.get("mode") not in ("local", "ssh"):
+        return None
+    out = {"id": s["id"], "name": str(s.get("name", s["id"]))[:64],
+           "kind": s["kind"], "source": s.get("source", "none")}
+    if conn["mode"] == "local":
+        out["conn"] = {"mode": "local"}
+    else:
+        host = str(conn.get("host", ""))
+        try:
+            port = int(conn.get("port", 22))
+        except (TypeError, ValueError):
+            return None
+        if not host or host.startswith("-") or not 1 <= port <= 65535:
+            return None
+        out["conn"] = {"mode": "ssh", "host": host, "port": port}
+    if s.get("public_ip"):
+        out["public_ip"] = str(s["public_ip"])[:64]
+    return out
+
+
+def _clean_rows(rows):
+    out = []
+    for r in rows or []:
+        try:
+            e, ts, a, b = str(r[0]), int(r[1]), int(r[2]), int(r[3])
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue
+        if ENTITY_RE.match(e) and ts >= 0 and a >= 0 and b >= 0:
+            out.append((e, ts, a, b))
+    return out
+
+
+def import_payload(d):
+    """Merge an export into this dashboard — imported values win on conflict,
+    everything not mentioned in the file is kept. Returns counts."""
+    if not isinstance(d, dict) or d.get("format") != EXPORT_FORMAT:
+        raise ValueError("not a traffic-dash export file")
+    try:
+        ver = int(d.get("version", 0))
+    except (TypeError, ValueError):
+        raise ValueError("bad export version")
+    if ver < 1 or ver > EXPORT_VERSION:
+        raise ValueError(f"unsupported export version {d.get('version')}")
+    stats = {"servers": 0, "rows": 0, "skipped_servers": 0}
+
+    # 1. node (client machine) configs -> config.json, imported wins by id
+    raw_servers = d.get("servers") or []
+    imported = []
+    for s in raw_servers:
+        cs = _clean_server(s)
+        if cs:
+            imported.append(cs)
+        else:
+            stats["skipped_servers"] += 1
+    if imported:
+        with CFG_LOCK:
+            byid = {s["id"]: s for s in CFG["servers"]}
+            for s in imported:
+                byid[s["id"]] = s
+            CFG["servers"] = list(byid.values())
+            tmp = CFG_PATH + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(CFG, f, indent=1)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, CFG_PATH)
+        for s in imported:  # live collector picks these up on its next loop
+            SERVERS[s["id"]] = s
+        stats["servers"] = len(imported)
+
+    # 2. per-server settings + card order, imported wins per key
+    imp_set = d.get("settings") or {}
+    with SETTINGS_LOCK:
+        cur = get_settings()
+        for sid, st in (imp_set.get("servers") or {}).items():
+            if isinstance(st, dict) and re.fullmatch(r"[a-z0-9_]+", str(sid)):
+                merged = cur["servers"].get(sid, dict(DEFAULT_SRV))
+                merged.update(st)
+                cur["servers"][sid] = merged
+        imp_order = [x for x in (imp_set.get("order") or []) if x in SERVERS]
+        cur["order"] = imp_order + [x for x in cur["order"] if x not in imp_order]
+        if isinstance(imp_set.get("retention"), dict):
+            for k in ("m1", "h1", "d1"):
+                if k in imp_set["retention"]:
+                    try:
+                        cur["retention"][k] = min(max(0, int(imp_set["retention"][k])), RETENTION_MAX_DAYS)
+                    except (TypeError, ValueError):
+                        pass
+        save_settings(cur)
+
+    # 3. geo cache
+    if isinstance(d.get("geo"), dict):
+        GEO.update({str(k): v for k, v in d["geo"].items() if isinstance(v, dict)})
+        save_geo()
+
+    # 4. traffic history — imported row replaces an existing bucket
+    c = db()
+    for t in DATA_TABLES:
+        rows = _clean_rows((d.get("data") or {}).get(t))
+        c.executemany(f"""INSERT INTO {t}(entity,ts,din,dout) VALUES(?,?,?,?)
+                          ON CONFLICT(entity,ts) DO UPDATE SET din=excluded.din, dout=excluded.dout""", rows)
+        stats["rows"] += len(rows)
+    rl = _clean_rows(d.get("raw_last"))
+    c.executemany("""INSERT INTO raw_last(entity,ts,bin,bout) VALUES(?,?,?,?)
+                     ON CONFLICT(entity) DO UPDATE SET ts=excluded.ts,bin=excluded.bin,bout=excluded.bout""", rl)
+    c.commit(); c.close()
+    return stats
+
+
 # ---------------- auth ----------------
 
 LOGIN_ATTEMPTS = {}
@@ -385,6 +655,39 @@ GRAN_TABLE = {"10s": ("s10", 10), "1m": ("m1", 60), "1h": ("h1", 3600), "1d": ("
 ENTITY_RE = re.compile(r"^([a-z0-9_]+)(?::port:(\d+))?$")
 
 
+def series_data(entity, gran, rng):
+    """Local rows for the range; if the range reaches past what's stored
+    locally and the archive holds this tier, fetch the missing head from the
+    archive and merge (local rows win on overlap). Archive failures degrade
+    to local-only data instead of failing the chart."""
+    table, bucket = GRAN_TABLE.get(gran, ("m1", 60))
+    now = int(time.time())
+    start = now - rng
+    c = db()
+    rows = c.execute(f"SELECT ts, din, dout FROM {table} WHERE entity=? AND ts>=? ORDER BY ts",
+                     (entity, start)).fetchall()
+    c.close()
+    points = {r[0]: (r[1], r[2]) for r in rows}
+    arch_used = False
+    if archive_enabled() and table in arch_tables():
+        local_min = rows[0][0] if rows else now
+        # small tolerance so a head gap from an idle node / recent restart
+        # doesn't trigger a pointless archive round-trip
+        if start < local_min - 2 * bucket:
+            try:
+                import urllib.parse
+                rem = arch_req(f"/series?table={table}&entity={urllib.parse.quote(entity)}"
+                               f"&start={start}&end={local_min}", timeout=6)
+                for ts_, di, do_ in rem.get("rows") or []:
+                    points.setdefault(int(ts_), (int(di), int(do_)))
+                arch_used = True
+            except Exception as e:
+                print(f"archive fetch failed for {entity}: {e}", file=sys.stderr)
+    return {"entity": entity, "bucket": bucket, "start": start, "end": now,
+            "archive": arch_used,
+            "points": [[t, v[0], v[1]] for t, v in sorted(points.items())]}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "TrafficDash/2.0"
 
@@ -409,9 +712,9 @@ class Handler(BaseHTTPRequestHandler):
         ck = http.cookies.SimpleCookie(self.headers.get("Cookie", ""))
         return "td" in ck and check_token(ck["td"].value)
 
-    def _body_json(self):
+    def _body_json(self, limit=65536):
         ln = int(self.headers.get("Content-Length", 0) or 0)
-        if ln > 65536:
+        if ln > limit:
             return None
         try:
             return json.loads(self.rfile.read(ln))
@@ -447,6 +750,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/series":
             self._send(200, self.series(q))
+            return
+        if path == "/api/export":
+            fname = time.strftime("traffic-dash-export-%Y%m%d-%H%M%S.json")
+            self._send(200, export_payload(),
+                       extra={"Content-Disposition": f'attachment; filename="{fname}"'})
             return
         self._send(404, {"error": "not found"})
 
@@ -549,6 +857,39 @@ class Handler(BaseHTTPRequestHandler):
                 save_settings(s)
             self._send(200, {"ok": True, "order": order})
             return
+        if path == "/api/retention":
+            body = self._body_json() or {}
+            with SETTINGS_LOCK:
+                s = get_settings()
+                ret = s["retention"]
+                for k in ("m1", "h1", "d1"):
+                    if k in body:
+                        try:
+                            v = int(body[k])
+                        except (TypeError, ValueError):
+                            self._send(400, {"error": f"{k} must be a whole number of days (0 = forever)"})
+                            return
+                        if not 0 <= v <= RETENTION_MAX_DAYS:
+                            self._send(400, {"error": f"{k} must be between 0 and {RETENTION_MAX_DAYS} days"})
+                            return
+                        ret[k] = v
+                save_settings(s)
+            self._send(200, {"ok": True, "retention": ret})
+            return
+        if path == "/api/import":
+            # 128 MB cap; for bigger exports use the CLI on the host:
+            #   bash /opt/traffic-dash/install.sh import <file>
+            body = self._body_json(limit=128 * 1024 * 1024)
+            if body is None:
+                self._send(400, {"error": "invalid JSON or file too large — use the CLI import for very large exports"})
+                return
+            try:
+                stats = import_payload(body)
+            except ValueError as e:
+                self._send(400, {"error": str(e)})
+                return
+            self._send(200, {"ok": True, **stats})
+            return
         self._send(404, {"error": "not found"})
 
     def overview(self):
@@ -594,7 +935,8 @@ class Handler(BaseHTTPRequestHandler):
                 "health_last": HEALTH.get(sid, 0),
             })
         c.close()
-        return {"servers": servers_out, "rates": rates, "now": int(now)}
+        return {"servers": servers_out, "rates": rates, "now": int(now),
+                "retention": s["retention"]}
 
     def series(self, q):
         entity = q.get("entity", "")
@@ -602,19 +944,11 @@ class Handler(BaseHTTPRequestHandler):
         if not m or m.group(1) not in SERVERS:
             return {"error": "bad entity"}
         gran = q.get("gran", "1m")
-        table, bucket = GRAN_TABLE.get(gran, ("m1", 60))
         try:
-            rng = min(int(q.get("range", 3600)), 400 * 86400)
+            rng = min(int(q.get("range", 3600)), (RETENTION_MAX_DAYS + 10) * 86400)
         except ValueError:
             rng = 3600
-        now = int(time.time())
-        start = now - rng
-        c = db()
-        rows = c.execute(f"SELECT ts, din, dout FROM {table} WHERE entity=? AND ts>=? ORDER BY ts",
-                         (entity, start)).fetchall()
-        c.close()
-        return {"entity": entity, "bucket": bucket, "start": start, "end": now,
-                "points": [[r[0], r[1], r[2]] for r in rows]}
+        return series_data(entity, gran, rng)
 
 
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
@@ -627,10 +961,44 @@ def main():
     load_geo()
     threading.Thread(target=geo_loop, daemon=True).start()
     threading.Thread(target=collector, daemon=True).start()
+    threading.Thread(target=archive_loop, daemon=True).start()
     srv = ThreadingHTTPServer(LISTEN, Handler)
     print(f"listening on {LISTEN}")
     srv.serve_forever()
 
 
+def cli(argv):
+    cmd = argv[0]
+    if cmd == "export":
+        init_db()
+        payload = export_payload()
+        if len(argv) > 1:
+            with open(argv[1], "w") as f:
+                json.dump(payload, f)
+            print(f"exported {sum(len(v) for v in payload['data'].values())} traffic rows, "
+                  f"{len(payload['servers'])} server configs -> {argv[1]}")
+        else:
+            json.dump(payload, sys.stdout)
+    elif cmd == "import":
+        if len(argv) < 2:
+            sys.exit("usage: app.py import <export.json>")
+        init_db()
+        load_geo()  # so the merged geo cache keeps existing entries
+        with open(argv[1]) as f:
+            d = json.load(f)
+        try:
+            stats = import_payload(d)
+        except ValueError as e:
+            sys.exit(f"import failed: {e}")
+        print(f"imported {stats['rows']} traffic rows, {stats['servers']} server configs"
+              + (f" ({stats['skipped_servers']} invalid server entries skipped)" if stats["skipped_servers"] else ""))
+        print("restart the service to pick up new servers: systemctl restart traffic-dash")
+    else:
+        sys.exit("usage: app.py [export [file.json] | import <file.json>]")
+
+
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1:
+        cli(sys.argv[1:])
+    else:
+        main()

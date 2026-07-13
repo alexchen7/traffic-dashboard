@@ -12,6 +12,16 @@
 #   itself never needs to reach GitHub, useful when a node can't reach GitHub directly):
 #     bash /opt/traffic-dash/install.sh add-server
 #
+#   Migrate (run on the dashboard host): export data + node configs to JSON,
+#   import it on another dashboard (merge — imported entries win):
+#     bash install.sh export [file.json]
+#     bash install.sh import file.json
+#
+#   Long-term archive on a big storage server (old rows shipped there before
+#   local pruning; charts fetch history back on demand):
+#     bash install.sh archive [--port 15100]           # on the storage server
+#     bash /opt/traffic-dash/install.sh link-archive   # then on the dashboard host
+#
 #   Remove everything:
 #     bash install.sh uninstall
 #
@@ -173,7 +183,7 @@ WorkingDirectory=${DASH_DIR}
 ExecStart=/usr/bin/python3 ${DASH_DIR}/app.py
 Restart=always
 RestartSec=5
-MemoryMax=120M
+MemoryMax=384M
 
 [Install]
 WantedBy=multi-user.target
@@ -222,11 +232,12 @@ server {
     ssl_certificate     ${cert};
     ssl_certificate_key ${key};
     ssl_protocols TLSv1.2 TLSv1.3;
+    client_max_body_size 128m;   # web data import (Settings -> Backup & migration)
     location / {
         proxy_pass http://127.0.0.1:${http_port};
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_read_timeout 60s;
+        proxy_read_timeout 300s;
     }
 }
 EOF
@@ -324,6 +335,122 @@ PYEOF
 }
 
 # --------------------------------------------------------------------------
+# export / import: migrate traffic data + node configs between dashboards
+# --------------------------------------------------------------------------
+cmd_export() {
+  need_root
+  [ -f "$DASH_DIR/app.py" ] || die "no dashboard here — run 'install.sh dashboard' first"
+  local out="${1:-/root/traffic-dash-export-$(date +%Y%m%d-%H%M%S).json}"
+  ( cd "$DASH_DIR" && python3 app.py export "$out" )
+  ok "copy this file to the new dashboard host, then run: bash install.sh import $(basename "$out")"
+}
+
+cmd_import() {
+  need_root
+  local f="${1:-}"
+  [ -n "$f" ] || die "usage: install.sh import <export.json>"
+  [ -f "$f" ] || die "file not found: $f"
+  [ -f "$DASH_DIR/app.py" ] || die "no dashboard here — run 'install.sh dashboard' first"
+  local was_active=0
+  if systemctl is-active --quiet traffic-dash; then
+    was_active=1
+    say "stopping traffic-dash during import"
+    systemctl stop traffic-dash
+  fi
+  ( cd "$DASH_DIR" && python3 app.py import "$f" )
+  if [ "$was_active" = 1 ]; then
+    systemctl start traffic-dash
+    ok "traffic-dash restarted"
+  fi
+  warn "SSH keys are not part of the export — if imported nodes stay offline, copy"
+  warn "/root/.ssh/id_ed25519 from the old host or run ssh-copy-id root@<node> for each."
+}
+
+# --------------------------------------------------------------------------
+# archive: long-term storage service on a big server + link from dashboard
+# --------------------------------------------------------------------------
+ARCHIVE_DIR=/opt/traffic-archive
+
+cmd_archive() {
+  need_root
+  command -v python3 >/dev/null || { apt-get update -qq && apt-get install -y -qq python3; } || die "install python3 manually"
+  local port="${A_PORT:-15100}" token
+  mkdir -p "$ARCHIVE_DIR"
+  if [ -f "$(dirname "$0")/archive/archive.py" ]; then
+    cp "$(dirname "$0")/archive/archive.py" "$ARCHIVE_DIR/archive.py"
+  else
+    fetch "archive/archive.py" "$ARCHIVE_DIR/archive.py"
+  fi
+  if [ -f "$ARCHIVE_DIR/config.json" ]; then
+    token="$(python3 -c "import json;print(json.load(open('$ARCHIVE_DIR/config.json'))['token'])")"
+    warn "existing config.json kept"
+  else
+    token="$(python3 -c 'import secrets;print(secrets.token_hex(32))')"
+    python3 - "$token" "$port" <<'PYEOF'
+import json, sys
+json.dump({"token": sys.argv[1], "listen_host": "0.0.0.0", "listen_port": int(sys.argv[2])},
+          open("/opt/traffic-archive/config.json", "w"), indent=1)
+PYEOF
+    chmod 600 "$ARCHIVE_DIR/config.json"
+  fi
+  cat > /etc/systemd/system/traffic-archive.service <<EOF
+[Unit]
+Description=Traffic dashboard archive (long-term storage)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${ARCHIVE_DIR}
+ExecStart=/usr/bin/python3 ${ARCHIVE_DIR}/archive.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now traffic-archive.service
+  sleep 2
+  systemctl is-active --quiet traffic-archive || die "traffic-archive failed to start (journalctl -u traffic-archive)"
+  echo
+  echo -e "${C_G}=============================================================${C_N}"
+  echo -e "  Archive:  http://<this-server>:${port}"
+  echo -e "  Token:    ${C_Y}${token}${C_N}"
+  echo -e "  Next, on the DASHBOARD host:  bash /opt/traffic-dash/install.sh link-archive"
+  echo -e "${C_G}=============================================================${C_N}"
+  warn "the token is the only auth — keep port ${port} on a private network / VPN,"
+  warn "or firewall it so only the dashboard host can reach it."
+}
+
+cmd_link_archive() {
+  need_root
+  [ -f "$DASH_DIR/config.json" ] || die "no dashboard here — run 'install.sh dashboard' first"
+  [ -e /dev/tty ] || die "link-archive is interactive; run it from a terminal"
+  ask "Archive URL (e.g. http://10.0.0.9:15100)" ""; local url="$REPLY"
+  [ -n "$url" ] || die "url required"
+  ask "Archive token" ""; local token="$REPLY"
+  [ -n "$token" ] || die "token required"
+  ask "Tiers to archive (comma list of m1,h1,d1)" "m1"; local ship="$REPLY"
+  say "testing connection"
+  curl -fsS -m 8 -H "Authorization: Bearer $token" "$url/status" >/dev/null \
+    || die "archive not reachable or token rejected"
+  python3 - "$url" "$token" "$ship" <<'PYEOF'
+import json, sys
+url, token, ship = sys.argv[1:4]
+p = "/opt/traffic-dash/config.json"
+cfg = json.load(open(p))
+tiers = [t.strip() for t in ship.split(",") if t.strip() in ("m1", "h1", "d1")] or ["m1"]
+cfg["archive"] = {"url": url, "token": token, "ship": tiers}
+json.dump(cfg, open(p, "w"), indent=1)
+print("archive linked:", url, tiers)
+PYEOF
+  chmod 600 "$DASH_DIR/config.json"
+  systemctl restart traffic-dash
+  ok "linked — shipping starts within a minute; pruning now waits for confirmed shipping"
+}
+
+# --------------------------------------------------------------------------
 cmd_uninstall() {
   need_root
   systemctl disable --now traffic-dash 2>/dev/null || true
@@ -339,15 +466,20 @@ cmd_uninstall() {
 
 # --------------------------------------------------------------------------
 usage() {
-  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
   exit 1
 }
 
 CMD="${1:-}"; shift || true
-SOURCE=auto; HTTP_PORT=15080; TLS_PORT=15443; NO_NGINX=0; DOMAIN=""; CERT_FILE=""; KEY_FILE=""
+FILE_ARG=""
+case "$CMD" in export|import)
+  if [ $# -gt 0 ] && [[ "${1:-}" != --* ]]; then FILE_ARG="$1"; shift; fi
+esac
+SOURCE=auto; HTTP_PORT=15080; TLS_PORT=15443; NO_NGINX=0; DOMAIN=""; CERT_FILE=""; KEY_FILE=""; A_PORT=15100
 while [ $# -gt 0 ]; do
   case "$1" in
     --source)    SOURCE="$2"; shift 2;;
+    --port)      A_PORT="$2"; shift 2;;
     --base)      REPO_BASE="$2"; shift 2;;
     --http-port) HTTP_PORT="$2"; shift 2;;
     --tls-port)  TLS_PORT="$2"; shift 2;;
@@ -363,6 +495,10 @@ case "$CMD" in
   node)       cmd_node;;
   dashboard)  cmd_dashboard;;
   add-server) cmd_add_server;;
+  export)     cmd_export "$FILE_ARG";;
+  import)     cmd_import "$FILE_ARG";;
+  archive)      cmd_archive;;
+  link-archive) cmd_link_archive;;
   uninstall)  cmd_uninstall;;
   *)          usage;;
 esac

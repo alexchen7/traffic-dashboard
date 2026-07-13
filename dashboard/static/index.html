@@ -208,6 +208,28 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
     <label>Confirm new password</label>
     <input type="password" id="pw-new2" autocomplete="new-password">
     <div class="row"><button class="primary" onclick="changePassword()">Change password</button></div>
+    <hr class="sep">
+    <h3>Data retention (all servers)</h3>
+    <label>1-minute data — keep for (days, 0 = forever)</label>
+    <input type="number" id="ret-m1" min="0" max="3650">
+    <label>1-hour data — keep for (days, 0 = forever)</label>
+    <input type="number" id="ret-h1" min="0" max="3650">
+    <label>Daily data — keep for (days, 0 = forever)</label>
+    <input type="number" id="ret-d1" min="0" max="3650">
+    <div class="hint">Applies within ~5 minutes. Lowering a value permanently deletes older rows.
+      Rough cost: 1-min data ≈ 43 MB per port/host per year; 1-hour ≈ 0.7 MB; daily ≈ 0.03 MB.</div>
+    <div class="row"><button class="primary" onclick="saveRetention()">Save retention</button></div>
+    <hr class="sep">
+    <h3>Backup &amp; migration</h3>
+    <div class="hint">Export covers all servers: traffic history, per-server settings and registered
+      node configs. Password, secret and SSH keys are not included. Import merges — matching
+      servers/buckets are overwritten by the file, everything else is kept.</div>
+    <div class="row" style="justify-content:flex-start">
+      <button onclick="exportData()">&#8595; Export data</button>
+      <button onclick="$('imp-file').click()">&#8593; Import data&hellip;</button>
+      <input type="file" id="imp-file" accept=".json,application/json" style="display:none"
+             onchange="importData(this.files[0])">
+    </div>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -430,6 +452,8 @@ function openSettings(){
     opt.textContent=`UTC${sign}${hh}:${mm}`+(o===8?' (Beijing/Shanghai)':o===9?' (Tokyo)':o===0?' (UTC)':'');
     tzs.appendChild(opt)}
   tzs.value=s.settings.tz_offset;
+  const ret=OV.retention||{m1:8,h1:120,d1:0};
+  $('ret-m1').value=ret.m1;$('ret-h1').value=ret.h1;$('ret-d1').value=ret.d1;
   $('settings-ov').classList.add('show')}
 function closeSettings(){$('settings-ov').classList.remove('show')}
 
@@ -446,6 +470,32 @@ async function changePassword(){
   const j=await r.json();
   if(r.ok){toast('Password changed');$('pw-cur').value=$('pw-new').value=$('pw-new2').value=''}
   else toast(j.error||'Failed')}
+
+async function saveRetention(){
+  const vals={m1:+$('ret-m1').value,h1:+$('ret-h1').value,d1:+$('ret-d1').value};
+  for(const[k,v]of Object.entries(vals))
+    if(!Number.isInteger(v)||v<0||v>3650){toast(`${k}: enter 0–3650 days`);return}
+  const r=await api('/api/retention',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(vals)});
+  const j=await r.json();
+  if(r.ok){toast('Retention saved — applies within ~5 min');loadOverview(false)}
+  else toast(j.error||'Failed')}
+
+function exportData(){location.href='/api/export'}
+
+async function importData(file){
+  if(!file)return;
+  const reset=()=>{$('imp-file').value=''};
+  if(!confirm(`Import "${file.name}"?\n\nServers and traffic buckets in the file overwrite matching ones here; everything else is kept.`)){reset();return}
+  let body;
+  try{body=await file.text();JSON.parse(body)}catch(e){toast('Not a valid JSON file');reset();return}
+  toast('Importing…');
+  let r,j;
+  try{r=await api('/api/import',{method:'POST',headers:{'Content-Type':'application/json'},body});j=await r.json()}
+  catch(e){toast('Import failed (file too large? use CLI import)');reset();return}
+  reset();
+  if(r.ok){toast(`Imported ${j.rows} traffic rows, ${j.servers} server configs`);closeSettings();sel=null;loadOverview()}
+  else toast(j.error||'Import failed')}
 
 async function logout(){await api('/api/logout',{method:'POST'});location.reload()}
 
