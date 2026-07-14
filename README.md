@@ -76,6 +76,37 @@ either copy `/root/.ssh/id_ed25519` from the old host or run
 import, restart the service (`systemctl restart traffic-dash`) if new nodes
 don't start reporting on their own.
 
+## Traffic sources & node health
+
+Two analytics panels on the dashboard:
+
+- **Traffic sources** — per-source-IP byte counts with country roll-up. The
+  meter keeps two nftables dynamic sets (`src_in`/`src_out`) with per-element
+  counters over the monitored-port set; the collector deltas them into daily
+  per-IP buckets. The dashboard geolocates the top IPs via ip-api's batch
+  endpoint (cached in the DB) and shows country cards with share bars plus a
+  top-50 source-IP table. Toggle a single server or all servers, over 24h/7d/30d/90d.
+  Relays see real end-user IPs; exit/client nodes mostly see the relay's IP.
+- **Node health** — every 10 s sample records an up/down tick per node into a
+  per-minute `health` table. The panel shows uptime %, a 96-segment status
+  strip (green/amber/red/grey-for-no-data) and the last recorded downtime,
+  over 24h/7d/30d/90d.
+
+Enabling per-source-IP tracking on existing nodes (one-time, after upgrading):
+
+```bash
+bash /opt/traffic-dash/install.sh update-nodes
+```
+
+This pushes the new `meter.py` to every SSH-registered node and re-runs
+`ensure` so the nft sets are created. Uptime tracking and the dashboard-host's
+own IP data need no node changes. Retention for both datasets is configurable
+in Settings → Data retention (defaults: per-source-IP 60 d, uptime 120 d).
+
+Requires an nftables new enough for stateful set counters (Debian 11+/Ubuntu
+20.04+ are fine). On older nft the meter simply omits per-IP data and
+everything else keeps working.
+
 ## Long-term archive (optional)
 
 If the dashboard VPS is short on disk, ship old rollups to a bigger server and
@@ -134,7 +165,7 @@ deletes older rows within ~5 minutes. Rough cost per port/host per year:
 ## Repo layout
 
 ```
-install.sh                  # one-key installer (dashboard | node | add-server | export | import | archive | link-archive | uninstall)
+install.sh                  # one-key installer (dashboard | node | add-server | export | import | archive | link-archive | update-nodes | uninstall)
 meter/meter.py              # per-server nft counter agent
 dashboard/app.py            # collector + web app (stdlib Python)
 dashboard/static/           # UI (6 themes) + Chart.js

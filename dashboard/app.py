@@ -10,6 +10,9 @@
 - Web app on 127.0.0.1:15080 behind nginx TLS (15443).
 - Migration: GET /api/export + POST /api/import (Settings → Backup & migration),
   or `python3 app.py export [file]` / `python3 app.py import <file>` on the host.
+- Traffic sources: per-source-IP daily buckets (from the meter's nft dynamic
+  sets) with country aggregation (/api/sources), plus per-minute uptime
+  history for every node (/api/health).
 - Optional remote archive (config.json "archive" key, set up with
   `install.sh archive` + `install.sh link-archive`): finalized m1/h1/d1 rows
   are shipped to archive/archive.py on a storage server BEFORE local pruning
@@ -34,16 +37,19 @@ SERVERS = {s["id"]: s for s in CFG["servers"]}
 DEFAULT_SRV = {"reset_day": 1, "quota_gb": 0, "tz_offset": 8,
                "port_names": {}, "ports_include": [], "ports_exclude": []}
 
-# days each rollup tier is kept; 0 = forever (s10 is fixed at 6 hours)
-DEFAULT_RETENTION = {"m1": 8, "h1": 120, "d1": 0}
+# days each tier is kept; 0 = forever (s10 is fixed at 6 hours).
+# ips = per-source-IP daily buckets, health = per-minute uptime samples.
+DEFAULT_RETENTION = {"m1": 8, "h1": 120, "d1": 0, "ips": 60, "health": 120}
 RETENTION_MAX_DAYS = 3650
+IP_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 
 RATES = {}
 RATES_LOCK = threading.Lock()
 SETTINGS_LOCK = threading.Lock()
 XUI_NAMES = {}      # sid -> {port_str: remark}
 HEALTH = {}         # sid -> last ok ts
-GEO = {}            # ip -> {"cc": "US", "country": "United States"}
+GEO = {}            # server ip -> {"cc": "US", "country": "United States"}
+IPGEO = {}          # source ip -> {"cc", "country"} (traffic-sources view)
 
 
 def db():
@@ -59,6 +65,8 @@ def init_db():
         c.execute(f"CREATE TABLE IF NOT EXISTS {t} (entity TEXT, ts INTEGER, din INTEGER, dout INTEGER, PRIMARY KEY(entity, ts))")
     c.execute("CREATE TABLE IF NOT EXISTS raw_last (entity TEXT PRIMARY KEY, ts INTEGER, bin INTEGER, bout INTEGER)")
     c.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")
+    c.execute("CREATE TABLE IF NOT EXISTS ips (sid TEXT, ip TEXT, day INTEGER, din INTEGER, dout INTEGER, PRIMARY KEY(sid, ip, day))")
+    c.execute("CREATE TABLE IF NOT EXISTS health (sid TEXT, ts INTEGER, ok INTEGER, total INTEGER, PRIMARY KEY(sid, ts))")
     c.commit()
     # ---- migrate v1 entities -> v2 namespaced ----
     row = c.execute("SELECT v FROM meta WHERE k='schema_v'").fetchone()
@@ -153,6 +161,37 @@ def record(c, entity, ts, cum_in, cum_out, last, tzoff):
         RATES[entity] = (round(din / dt), round(dout / dt), ts)
 
 
+def record_ip(c, sid, ip, ts, cum_in, cum_out, last, tzoff):
+    """Delta a per-source-IP cumulative counter into a daily bucket."""
+    if not IP_RE.match(ip):
+        return
+    key = f"{sid}:ip:{ip}"
+    prev = last.get(key)
+    last[key] = (ts, cum_in, cum_out)
+    if prev is None:
+        return
+    lts, lin, lout = prev
+    dt = ts - lts
+    if dt <= 0 or dt > 3600:
+        return
+    din = cum_in - lin
+    dout = cum_out - lout
+    if din < 0: din = cum_in       # set element expired & recreated
+    if dout < 0: dout = cum_out
+    if din == 0 and dout == 0:
+        return
+    day = ((ts + tzoff * 3600) // 86400) * 86400 - tzoff * 3600
+    c.execute("""INSERT INTO ips(sid,ip,day,din,dout) VALUES(?,?,?,?,?)
+                 ON CONFLICT(sid,ip,day) DO UPDATE SET din=din+excluded.din, dout=dout+excluded.dout""",
+              (sid, ip, day, din, dout))
+
+
+def record_health(c, sid, ts, ok):
+    c.execute("""INSERT INTO health(sid,ts,ok,total) VALUES(?,?,?,1)
+                 ON CONFLICT(sid,ts) DO UPDATE SET ok=ok+excluded.ok, total=total+1""",
+              (sid, ts - ts % 60, 1 if ok else 0))
+
+
 def meter_cmd(srv, st):
     inc = ",".join(str(p) for p in st.get("ports_include", []))
     exc = ",".join(str(p) for p in st.get("ports_exclude", []))
@@ -204,6 +243,14 @@ def prune(c, now, retention=None):
                 # never delete rows the archive hasn't confirmed receiving
                 cut = min(cut, int(shipped.get(t, 0)))
             c.execute(f"DELETE FROM {t} WHERE ts < ?", (cut,))
+    days = int(r.get("ips", DEFAULT_RETENTION["ips"]) or 0)
+    if days > 0:
+        c.execute("DELETE FROM ips WHERE day < ?", (now - days * 86400,))
+    days = int(r.get("health", DEFAULT_RETENTION["health"]) or 0)
+    if days > 0:
+        c.execute("DELETE FROM health WHERE ts < ?", (now - days * 86400,))
+    # raw counter baselines for IPs that went quiet
+    c.execute("DELETE FROM raw_last WHERE entity LIKE '%:ip:%' AND ts < ?", (now - 3 * 86400,))
 
 
 def collector():
@@ -223,12 +270,18 @@ def collector():
                     r = fut.result(timeout=12)
                 except Exception:
                     r = None
+                record_health(c, sid, int(time.time()), bool(r))
                 if not r:
                     continue
                 tzoff = settings["servers"][sid].get("tz_offset", 8)
                 ts = int(time.time())
                 for port, v in r.get("ports", {}).items():
                     record(c, f"{sid}:port:{port}", ts, v.get("in", 0), v.get("out", 0), last, tzoff)
+                for ip, v in (r.get("ips") or {}).items():
+                    try:
+                        record_ip(c, sid, str(ip), ts, int(v.get("in", 0)), int(v.get("out", 0)), last, tzoff)
+                    except (TypeError, ValueError, AttributeError):
+                        pass
                 h = r.get("host", {})
                 record(c, sid, ts, h.get("rx", 0), h.get("tx", 0), last, tzoff)
                 if r.get("names"):
@@ -325,6 +378,51 @@ def resolve_geos():
         save_geo()
 
 
+def load_ipgeo():
+    c = db()
+    row = c.execute("SELECT v FROM meta WHERE k='ipgeo'").fetchone()
+    c.close()
+    if row:
+        try:
+            IPGEO.update(json.loads(row[0]))
+        except Exception:
+            pass
+
+
+def save_ipgeo():
+    c = db()
+    c.execute("INSERT INTO meta(k,v) VALUES('ipgeo',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+              (json.dumps(IPGEO),))
+    c.commit(); c.close()
+
+
+def resolve_ip_geos():
+    """Geolocate the top source IPs of the last 7 days that we don't know yet
+    (ip-api batch endpoint, 100 per call, well under its rate limit)."""
+    import urllib.request
+    c = db()
+    rows = c.execute("""SELECT ip, SUM(din+dout) t FROM ips WHERE day >= ?
+                        GROUP BY ip ORDER BY t DESC LIMIT 400""",
+                     (int(time.time()) - 7 * 86400,)).fetchall()
+    c.close()
+    todo = [ip for ip, _ in rows if ip not in IPGEO][:100]
+    if not todo:
+        return
+    req = urllib.request.Request("http://ip-api.com/batch?fields=status,countryCode,country,query",
+                                 data=json.dumps(todo).encode(),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        for d in json.loads(r.read().decode()):
+            ip = d.get("query", "")
+            if not ip:
+                continue
+            if d.get("status") == "success":
+                IPGEO[ip] = {"cc": d.get("countryCode", ""), "country": d.get("country", "")}
+            else:
+                IPGEO[ip] = {"cc": "", "country": ""}   # private/unresolvable: cache the miss
+    save_ipgeo()
+
+
 def geo_loop():
     """Runs geo lookups OFF the collector thread so network stalls never
     freeze sampling."""
@@ -333,6 +431,10 @@ def geo_loop():
             resolve_geos()
         except Exception as e:
             print("geo_loop error:", e, file=sys.stderr)
+        try:
+            resolve_ip_geos()
+        except Exception as e:
+            print("ipgeo error:", e, file=sys.stderr)
         time.sleep(1800)
 
 
@@ -439,7 +541,7 @@ def archive_loop():
 # ---------------- export / import (migration) ----------------
 
 EXPORT_FORMAT = "traffic-dash-export"
-EXPORT_VERSION = 1
+EXPORT_VERSION = 2   # v2 adds "ips" (per-source-IP) and "health" (uptime) tables
 DATA_TABLES = ("s10", "m1", "h1", "d1")
 
 
@@ -454,17 +556,21 @@ def export_payload():
                 c.execute(f"SELECT entity,ts,din,dout FROM {t} ORDER BY entity,ts")]
             for t in DATA_TABLES}
     raw_last = [list(r) for r in c.execute("SELECT entity,ts,bin,bout FROM raw_last")]
+    ips = [list(r) for r in c.execute("SELECT sid,ip,day,din,dout FROM ips ORDER BY sid,ip,day")]
+    health = [list(r) for r in c.execute("SELECT sid,ts,ok,total FROM health ORDER BY sid,ts")]
     row = c.execute("SELECT v FROM meta WHERE k='settings'").fetchone()
     settings = json.loads(row[0]) if row else {"servers": {}}
     row = c.execute("SELECT v FROM meta WHERE k='geo'").fetchone()
     geo = json.loads(row[0]) if row else {}
+    row = c.execute("SELECT v FROM meta WHERE k='ipgeo'").fetchone()
+    ipgeo = json.loads(row[0]) if row else {}
     c.close()
     with CFG_LOCK:
         servers = json.loads(json.dumps(CFG["servers"]))  # deep copy
     return {"format": EXPORT_FORMAT, "version": EXPORT_VERSION,
             "exported_at": int(time.time()),
-            "servers": servers, "settings": settings, "geo": geo,
-            "data": data, "raw_last": raw_last}
+            "servers": servers, "settings": settings, "geo": geo, "ipgeo": ipgeo,
+            "data": data, "raw_last": raw_last, "ips": ips, "health": health}
 
 
 def _clean_server(s):
@@ -559,7 +665,7 @@ def import_payload(d):
         imp_order = [x for x in (imp_set.get("order") or []) if x in SERVERS]
         cur["order"] = imp_order + [x for x in cur["order"] if x not in imp_order]
         if isinstance(imp_set.get("retention"), dict):
-            for k in ("m1", "h1", "d1"):
+            for k in ("m1", "h1", "d1", "ips", "health"):
                 if k in imp_set["retention"]:
                     try:
                         cur["retention"][k] = min(max(0, int(imp_set["retention"][k])), RETENTION_MAX_DAYS)
@@ -567,10 +673,13 @@ def import_payload(d):
                         pass
         save_settings(cur)
 
-    # 3. geo cache
+    # 3. geo caches
     if isinstance(d.get("geo"), dict):
         GEO.update({str(k): v for k, v in d["geo"].items() if isinstance(v, dict)})
         save_geo()
+    if isinstance(d.get("ipgeo"), dict):
+        IPGEO.update({str(k): v for k, v in d["ipgeo"].items() if isinstance(v, dict)})
+        save_ipgeo()
 
     # 4. traffic history — imported row replaces an existing bucket
     c = db()
@@ -582,6 +691,28 @@ def import_payload(d):
     rl = _clean_rows(d.get("raw_last"))
     c.executemany("""INSERT INTO raw_last(entity,ts,bin,bout) VALUES(?,?,?,?)
                      ON CONFLICT(entity) DO UPDATE SET ts=excluded.ts,bin=excluded.bin,bout=excluded.bout""", rl)
+    # 5. v2 extras: per-source-IP buckets + uptime history — imported wins
+    ips_rows = []
+    for r in d.get("ips") or []:
+        try:
+            sid_, ip_, day_, di_, do_ = str(r[0]), str(r[1]), int(r[2]), int(r[3]), int(r[4])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if re.fullmatch(r"[a-z0-9_]+", sid_) and IP_RE.match(ip_) and day_ >= 0 and di_ >= 0 and do_ >= 0:
+            ips_rows.append((sid_, ip_, day_, di_, do_))
+    c.executemany("""INSERT INTO ips(sid,ip,day,din,dout) VALUES(?,?,?,?,?)
+                     ON CONFLICT(sid,ip,day) DO UPDATE SET din=excluded.din, dout=excluded.dout""", ips_rows)
+    hp_rows = []
+    for r in d.get("health") or []:
+        try:
+            sid_, ts_, ok_, tot_ = str(r[0]), int(r[1]), int(r[2]), int(r[3])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if re.fullmatch(r"[a-z0-9_]+", sid_) and ts_ >= 0 and 0 <= ok_ <= tot_:
+            hp_rows.append((sid_, ts_, ok_, tot_))
+    c.executemany("""INSERT INTO health(sid,ts,ok,total) VALUES(?,?,?,?)
+                     ON CONFLICT(sid,ts) DO UPDATE SET ok=excluded.ok, total=excluded.total""", hp_rows)
+    stats["rows"] += len(ips_rows) + len(hp_rows)
     c.commit(); c.close()
     return stats
 
@@ -751,6 +882,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/series":
             self._send(200, self.series(q))
             return
+        if path == "/api/sources":
+            self._send(200, self.sources(q))
+            return
+        if path == "/api/health":
+            self._send(200, self.health_api(q))
+            return
         if path == "/api/export":
             fname = time.strftime("traffic-dash-export-%Y%m%d-%H%M%S.json")
             self._send(200, export_payload(),
@@ -862,7 +999,7 @@ class Handler(BaseHTTPRequestHandler):
             with SETTINGS_LOCK:
                 s = get_settings()
                 ret = s["retention"]
-                for k in ("m1", "h1", "d1"):
+                for k in ("m1", "h1", "d1", "ips", "health"):
                     if k in body:
                         try:
                             v = int(body[k])
@@ -950,6 +1087,88 @@ class Handler(BaseHTTPRequestHandler):
             rng = 3600
         return series_data(entity, gran, rng)
 
+    def sources(self, q):
+        """Per-source-IP traffic + per-country aggregation for one server or all."""
+        sid = q.get("server", "")
+        if sid and sid not in SERVERS:
+            return {"error": "unknown server"}
+        try:
+            days = max(1, min(int(q.get("days", 7)), 365))
+        except ValueError:
+            days = 7
+        since = int(time.time()) - days * 86400
+        c = db()
+        if sid:
+            rows = c.execute("SELECT ip, SUM(din), SUM(dout) FROM ips WHERE sid=? AND day>=? GROUP BY ip",
+                             (sid, since)).fetchall()
+        else:
+            rows = c.execute("SELECT ip, SUM(din), SUM(dout) FROM ips WHERE day>=? GROUP BY ip",
+                             (since,)).fetchall()
+        c.close()
+        rows.sort(key=lambda r: r[1] + r[2], reverse=True)
+        total_all = sum(r[1] + r[2] for r in rows)
+        denom = total_all or 1
+        top = []
+        for ip, di, do_ in rows[:50]:
+            g = IPGEO.get(ip) or {}
+            top.append({"ip": ip, "in": di, "out": do_, "total": di + do_,
+                        "share": round(100 * (di + do_) / denom, 2),
+                        "cc": g.get("cc", ""), "country": g.get("country", "")})
+        other = sum(r[1] + r[2] for r in rows[50:])
+        countries = {}
+        for ip, di, do_ in rows:
+            g = IPGEO.get(ip) or {}
+            key = g.get("cc") or "??"
+            cn = countries.setdefault(key, {"cc": g.get("cc", ""),
+                                            "country": g.get("country") or "Unknown",
+                                            "in": 0, "out": 0, "ips": 0})
+            cn["in"] += di; cn["out"] += do_; cn["ips"] += 1
+        clist = []
+        for cn in countries.values():
+            cn["total"] = cn["in"] + cn["out"]
+            cn["share"] = round(100 * cn["total"] / denom, 2)
+            clist.append(cn)
+        clist.sort(key=lambda x: -x["total"])
+        return {"days": days, "server": sid or "all", "total": total_all,
+                "ips_tracked": len(rows), "top": top, "other": other,
+                "countries": clist[:30]}
+
+    def health_api(self, q):
+        """Uptime per server: percentage, 96-segment strip, last incident."""
+        try:
+            days = max(1, min(int(q.get("days", 1)), 90))
+        except ValueError:
+            days = 1
+        now = int(time.time())
+        since = now - days * 86400
+        nbuck = 96
+        bsz = max(60, (days * 86400) // nbuck)
+        s = get_settings()
+        c = db()
+        out = []
+        for sid in s["order"]:
+            rows = c.execute("SELECT ts, ok, total FROM health WHERE sid=? AND ts>=?",
+                             (sid, since)).fetchall()
+            okc = sum(r[1] for r in rows)
+            tot = sum(r[2] for r in rows)
+            buckets = [[0, 0] for _ in range(nbuck)]
+            for ts_, ok_, tot_ in rows:
+                i = min(nbuck - 1, max(0, (ts_ - since) // bsz))
+                buckets[i][0] += ok_
+                buckets[i][1] += tot_
+            strip = [round(100 * b[0] / b[1]) if b[1] else -1 for b in buckets]
+            row = c.execute("SELECT MAX(ts) FROM health WHERE sid=? AND total>0 AND ok=0",
+                            (sid,)).fetchone()
+            out.append({"id": sid,
+                        "name": s["servers"][sid].get("display_name") or SERVERS[sid]["name"],
+                        "kind": SERVERS[sid]["kind"],
+                        "up_now": now - HEALTH.get(sid, 0) < 60,
+                        "uptime": round(100 * okc / tot, 2) if tot else None,
+                        "strip": strip, "bucket_sec": bsz,
+                        "last_down": row[0] if row and row[0] else None})
+        c.close()
+        return {"days": days, "since": since, "now": now, "servers": out}
+
 
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
@@ -959,6 +1178,7 @@ class ThreadingHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
 def main():
     init_db()
     load_geo()
+    load_ipgeo()
     threading.Thread(target=geo_loop, daemon=True).start()
     threading.Thread(target=collector, daemon=True).start()
     threading.Thread(target=archive_loop, daemon=True).start()
@@ -983,7 +1203,8 @@ def cli(argv):
         if len(argv) < 2:
             sys.exit("usage: app.py import <export.json>")
         init_db()
-        load_geo()  # so the merged geo cache keeps existing entries
+        load_geo()    # so the merged geo caches keep existing entries
+        load_ipgeo()
         with open(argv[1]) as f:
             d = json.load(f)
         try:

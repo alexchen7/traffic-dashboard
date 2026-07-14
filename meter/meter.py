@@ -13,6 +13,13 @@ touches other tables, no service restarts):
   meter_pre  (prerouting,  -150): bytes addressed to port  -> in_<p>
   meter_post (postrouting,  200): bytes leaving with sport -> out_<p>
 
+Per-source-IP tracking (v3): two dynamic sets with per-element counters,
+src_in (keyed on saddr, prerouting) and src_out (keyed on daddr, postrouting),
+fed by one rule per protocol over the whole monitored-port set. Elements
+expire after 26h idle so the sets stay bounded. If the local nft is too old
+for stateful set counters the sets simply don't exist and `report` omits
+"ips" — everything else keeps working.
+
 Usage: meter.py [ensure|report] [--source S] [--include CSV] [--exclude CSV]
 """
 import json, subprocess, sys, time
@@ -112,12 +119,21 @@ def chain_ports(chain):
     return ports
 
 
+def chain_mentions(chain, needle):
+    p = sh(f"nft list chain ip {TABLE} {chain}", check=False)
+    return p.returncode == 0 and needle in (p.stdout or "")
+
+
 def ensure(source, include, exclude):
     ports, names = discover(source, include, exclude)
     if not table_exists():
         sh(f"nft add table ip {TABLE}")
     sh(f"nft add chain ip {TABLE} meter_pre '{{ type filter hook prerouting priority -150 ; policy accept ; }}'", check=False)
     sh(f"nft add chain ip {TABLE} meter_post '{{ type filter hook postrouting priority 200 ; policy accept ; }}'", check=False)
+    # per-source-IP dynamic sets (needs nft with stateful set counters; if
+    # unsupported these fail silently and per-IP reporting is skipped)
+    for sname in ("src_in", "src_out"):
+        sh(f"nft add set ip {TABLE} {sname} '{{ type ipv4_addr ; flags dynamic,timeout ; timeout 26h ; size 65535 ; counter ; }}'", check=False)
     have = existing_counters()
     batch = [f"add counter ip {TABLE} {d}_{p}" for p in ports for d in ("in", "out")
              if f"{d}_{p}" not in have]
@@ -140,6 +156,15 @@ def ensure(source, include, exclude):
                 continue
             if cp not in want:
                 sh(f"nft delete counter ip {TABLE} {name}", check=False)
+    # per-IP set-update rules (re-added after any chain rebuild above)
+    if ports:
+        pset = "{ " + ", ".join(str(p) for p in ports) + " }"
+        if not chain_mentions("meter_pre", "@src_in"):
+            sh(f"nft add rule ip {TABLE} meter_pre 'tcp dport {pset} update @src_in {{ ip saddr }}'", check=False)
+            sh(f"nft add rule ip {TABLE} meter_pre 'udp dport {pset} update @src_in {{ ip saddr }}'", check=False)
+        if not chain_mentions("meter_post", "@src_out"):
+            sh(f"nft add rule ip {TABLE} meter_post 'tcp sport {pset} update @src_out {{ ip daddr }}'", check=False)
+            sh(f"nft add rule ip {TABLE} meter_post 'udp sport {pset} update @src_out {{ ip daddr }}'", check=False)
     return ports, names
 
 
@@ -164,6 +189,32 @@ def host_bytes(iface):
     return 0, 0
 
 
+def set_elems(name):
+    """{ip: cumulative_bytes} from a dynamic set with per-element counters."""
+    out = {}
+    j = nft_json(f"list set ip {TABLE} {name}", check=False)
+    if not j:
+        return out
+    for item in j.get("nftables", []):
+        s = item.get("set")
+        if not s:
+            continue
+        for el in s.get("elem") or []:
+            if not isinstance(el, dict):
+                continue
+            e = el.get("elem")
+            if not isinstance(e, dict):
+                continue
+            ip = e.get("val")
+            cnt = e.get("counter") or {}
+            if isinstance(ip, str):
+                out[ip] = int(cnt.get("bytes", 0))
+    return out
+
+
+MAX_IPS = 512  # cap report payload; long tail beyond this is negligible
+
+
 def report(source, include, exclude):
     ports, names = ensure(source, include, exclude)
     pset = {str(p) for p in ports}
@@ -176,10 +227,19 @@ def report(source, include, exclude):
         d, p = c["name"].split("_", 1)
         if p in pset:
             out_ports.setdefault(p, {})[d] = c.get("bytes", 0)
+    ips = {}
+    for ip, b in set_elems("src_in").items():
+        ips.setdefault(ip, {})["in"] = b
+    for ip, b in set_elems("src_out").items():
+        ips.setdefault(ip, {})["out"] = b
+    if len(ips) > MAX_IPS:
+        ips = dict(sorted(ips.items(), key=lambda kv: kv[1].get("in", 0) + kv[1].get("out", 0),
+                          reverse=True)[:MAX_IPS])
     iface = default_iface()
     rx, tx = host_bytes(iface)
     print(json.dumps({"ts": int(time.time()), "ports": out_ports,
                       "names": {str(k): v for k, v in names.items()},
+                      "ips": ips,
                       "host": {"rx": rx, "tx": tx, "iface": iface}}))
 
 

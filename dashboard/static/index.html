@@ -112,6 +112,28 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
 .toast.show{opacity:1}
 .addport{display:flex;gap:8px;align-items:center}
 .addport input{width:110px}
+/* traffic sources */
+.cgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(195px,1fr));gap:10px}
+.ccard{background:var(--panel2);border:1px solid var(--border);border-radius:11px;padding:12px 14px;transition:.15s}
+.ccard:hover{border-color:var(--accent)}
+.ccard .cc-top{display:flex;align-items:center;gap:8px;font-weight:650;font-size:.85rem}
+.ccard .cc-tot{font-size:1.08rem;font-weight:700;margin-top:7px;display:flex;align-items:baseline;gap:8px}
+.ccard .cc-share{font-size:.7rem;color:var(--muted);font-weight:400}
+.ccard .cc-io{display:flex;gap:12px;font-size:.72rem;margin-top:7px}
+.ccard .cc-ips{font-size:.68rem;color:var(--muted);margin-top:5px}
+.iprank{color:var(--muted);font-size:.76rem;width:26px}
+/* node health */
+.hrow{display:flex;align-items:center;gap:14px;padding:11px 4px;border-bottom:1px solid var(--grid);flex-wrap:wrap}
+.hrow:last-child{border-bottom:none}
+.hname{width:180px;font-weight:650;font-size:.86rem;display:flex;gap:8px;align-items:center}
+.hname .dot{margin-left:0}
+.hpct{width:76px;font-variant-numeric:tabular-nums;font-weight:700;font-size:.92rem}
+.hstrip{display:flex;gap:2px;flex:1;min-width:260px;height:24px;align-items:stretch}
+.hstrip i{flex:1;border-radius:2px;background:var(--grid);min-width:2px}
+.hstrip i.ok{background:var(--accent2)}
+.hstrip i.part{background:var(--warn)}
+.hstrip i.down{background:var(--danger)}
+.hmeta{font-size:.72rem;color:var(--muted);width:190px;text-align:right}
 @media(max-width:700px){body{padding:14px}.chartbox{height:240px}}
 </style>
 </head>
@@ -179,6 +201,30 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
   </table>
 </div>
 
+<div class="panel">
+  <div class="head">
+    <h2>&#127760; Traffic sources</h2><span class="sub" id="src-note"></span>
+    <div class="spacer"></div>
+    <label class="sub" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+      <input type="checkbox" id="src-all"> all servers</label>
+    <div class="seg" id="src-range"></div>
+  </div>
+  <div class="cgrid" id="country-cards"></div>
+  <table style="margin-top:14px">
+    <thead><tr><th></th><th>Source IP</th><th>Location</th><th>Share</th><th>Upload &#8593;</th><th>Download &#8595;</th><th>Total</th></tr></thead>
+    <tbody id="ip-rows"></tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <div class="head">
+    <h2>&#128147; Node health</h2><span class="sub" id="hl-note"></span>
+    <div class="spacer"></div>
+    <div class="seg" id="hl-range"></div>
+  </div>
+  <div id="health-rows"></div>
+</div>
+
 <div class="overlay" id="settings-ov">
   <div class="modal">
     <h2 id="set-title">Settings</h2>
@@ -216,6 +262,10 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
     <input type="number" id="ret-h1" min="0" max="3650">
     <label>Daily data — keep for (days, 0 = forever)</label>
     <input type="number" id="ret-d1" min="0" max="3650">
+    <label>Per-source-IP data — keep for (days, 0 = forever)</label>
+    <input type="number" id="ret-ips" min="0" max="3650">
+    <label>Uptime history — keep for (days, 0 = forever)</label>
+    <input type="number" id="ret-health" min="0" max="3650">
     <div class="hint">Applies within ~5 minutes. Lowering a value permanently deletes older rows.
       Rough cost: 1-min data ≈ 43 MB per port/host per year; 1-hour ≈ 0.7 MB; daily ≈ 0.03 MB.</div>
     <div class="row"><button class="primary" onclick="saveRetention()">Save retention</button></div>
@@ -239,7 +289,9 @@ const $=id=>document.getElementById(id);
 let OV=null, sel=null, entity=null;
 let bwRange=3600, bwGran='auto', usRange=86400, usGran='auto', dragId=null;
 let speedChart=null, usageChart=null;
+let srcDays=7, srcAll=false, hlDays=1;
 const RANGES=[['1h',3600],['6h',21600],['24h',86400],['7d',604800],['30d',2592000]];
+const DAYRANGES=[['24h',1],['7d',7],['30d',30],['90d',90]];
 
 /* ---------- theme ---------- */
 const themeSel=$('theme-sel');
@@ -289,8 +341,12 @@ async function api(p,opt){const r=await fetch(p,opt);if(r.status===401){location
 
 function seg(el,cur,cb){el.innerHTML='';RANGES.forEach(([lbl,sec])=>{const b=document.createElement('button');
   b.textContent=lbl;b.className=sec===cur?'on':'';b.onclick=()=>cb(sec);el.appendChild(b)})}
+function dayseg(el,cur,cb){el.innerHTML='';DAYRANGES.forEach(([lbl,d])=>{const b=document.createElement('button');
+  b.textContent=lbl;b.className=d===cur?'on':'';b.onclick=()=>cb(d);el.appendChild(b)})}
 function buildSegs(){seg($('bw-range'),bwRange,s=>{bwRange=s;buildSegs();refreshSpeed()});
-  seg($('us-range'),usRange,s=>{usRange=s;buildSegs();refreshUsage()})}
+  seg($('us-range'),usRange,s=>{usRange=s;buildSegs();refreshUsage()});
+  dayseg($('src-range'),srcDays,d=>{srcDays=d;buildSegs();refreshSources()});
+  dayseg($('hl-range'),hlDays,d=>{hlDays=d;buildSegs();refreshHealth()})}
 
 function srv(){return OV?OV.servers.find(s=>s.id===sel):null}
 
@@ -310,7 +366,7 @@ function buildServerCards(){
     d.addEventListener('dragover',e=>{if(dragId&&dragId!==s.id){e.preventDefault();d.classList.add('drag-over')}});
     d.addEventListener('dragleave',()=>d.classList.remove('drag-over'));
     d.addEventListener('drop',e=>{e.preventDefault();d.classList.remove('drag-over');dropOnServer(s.id)});
-    d.onclick=()=>{sel=s.id;entity=s.id;buildServerCards();buildChips();refreshCharts();renderPorts();updateTz()};
+    d.onclick=()=>{sel=s.id;entity=s.id;buildServerCards();buildChips();refreshCharts();renderPorts();updateTz();refreshSources()};
     const cc=(s.country_code||'').toLowerCase();
     const flagHtml=cc?`<img class="flag-img" src="https://flagcdn.com/32x24/${cc}.png" srcset="https://flagcdn.com/64x48/${cc}.png 2x" alt="${esc(s.country_code)}" title="${esc(s.country)} (${esc(s.geo_ip)})" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'flag-cc',textContent:this.alt}))">`:'';
     d.innerHTML=`<div class="row1"><span class="grip" title="Drag to reorder">&#x2630;</span>${flagHtml}<span class="nm">${esc(s.name)}</span>
@@ -384,6 +440,7 @@ function hexRgb(h){h=h.replace('#','');if(h.length===3)h=h.split('').map(c=>c+c)
 
 function refreshCharts(){refreshSpeed();refreshUsage()}
 function rebuildCharts(){refreshCharts()}
+function refreshExtras(){refreshSources();refreshHealth()}
 
 function renderPorts(){
   const s=srv();if(!s)return;
@@ -429,6 +486,63 @@ function updateTz(){
   $('tz-badge').innerHTML=`TZ <b>${s.tz_label}</b> · resets day ${s.settings.reset_day}`;
   $('sub-line').textContent=OV.servers.map(x=>x.name).join(' · ')}
 
+/* ---------- traffic sources ---------- */
+function flagImg(cc,title){
+  if(!cc)return '<span class="flag-cc">??</span>';
+  const l=cc.toLowerCase();
+  return `<img class="flag-img" src="https://flagcdn.com/32x24/${l}.png" srcset="https://flagcdn.com/64x48/${l}.png 2x" alt="${esc(cc)}" title="${esc(title||cc)}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'flag-cc',textContent:this.alt}))">`}
+
+async function refreshSources(){
+  const s=srv();if(!s&&!srcAll)return;
+  const qs=`days=${srcDays}`+(srcAll?'':`&server=${sel}`);
+  let d;try{d=await (await api('/api/sources?'+qs)).json()}catch(e){return}
+  $('src-note').textContent=`${srcAll?'all servers':s.name} · ${d.ips_tracked.toLocaleString()} IPs · last ${srcDays}d`;
+  const cbox=$('country-cards');cbox.innerHTML='';
+  if(!d.countries.length){cbox.innerHTML='<div class="sub">No source-IP data yet. Nodes need the updated meter; data appears within ~10s of the next sample.</div>'}
+  d.countries.forEach(cn=>{
+    const el=document.createElement('div');el.className='ccard';
+    el.innerHTML=`<div class="cc-top">${flagImg(cn.cc,cn.country)}<span>${esc(cn.country)}</span></div>
+      <div class="cc-tot">${fmtB(cn.total)}<span class="cc-share">${cn.share}%</span></div>
+      <div class="bar"><i style="width:${Math.min(100,cn.share)}%"></i></div>
+      <div class="cc-io"><span class="down">↓ ${fmtB(cn.in)}</span><span class="up">↑ ${fmtB(cn.out)}</span></div>
+      <div class="cc-ips">${cn.ips.toLocaleString()} source IP${cn.ips===1?'':'s'}</div>`;
+    cbox.appendChild(el)});
+  const tb=$('ip-rows');tb.innerHTML='';
+  d.top.forEach((p,i)=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td class="iprank">${i+1}</td>
+      <td class="mono">${esc(p.ip)}</td>
+      <td>${flagImg(p.cc,p.country)} <span style="font-size:.8rem">${esc(p.country||'—')}</span></td>
+      <td><span class="pctbar"><i style="width:${Math.min(100,p.share)}%"></i></span><span class="mono" style="color:var(--muted);font-size:.76rem">${p.share}%</span></td>
+      <td class="mono up">${fmtB(p.out)}</td><td class="mono down">${fmtB(p.in)}</td>
+      <td class="mono"><b>${fmtB(p.total)}</b></td>`;
+    tb.appendChild(tr)});
+  if(d.other>0){const tr=document.createElement('tr');
+    tr.innerHTML=`<td></td><td class="sub" colspan="3">other IPs beyond top 50</td>
+      <td></td><td></td><td class="mono">${fmtB(d.other)}</td>`;tb.appendChild(tr)}}
+
+/* ---------- node health ---------- */
+async function refreshHealth(){
+  let d;try{d=await (await api('/api/health?days='+hlDays)).json()}catch(e){return}
+  const up=d.servers.filter(s=>s.up_now).length;
+  $('hl-note').textContent=`${up}/${d.servers.length} online · last ${hlDays===1?'24h':hlDays+'d'}`;
+  const box=$('health-rows');box.innerHTML='';
+  d.servers.forEach(s=>{
+    const strip=s.strip.map(v=>{
+      const cls=v<0?'':v>=100?'ok':v>=50?'part':'down';
+      const lbl=v<0?'no data':v+'% up';
+      return `<i class="${cls}" title="${lbl}"></i>`}).join('');
+    const pct=s.uptime==null?'—':s.uptime+'%';
+    const pcol=s.uptime==null?'var(--muted)':s.uptime>=99.5?'var(--accent2)':s.uptime>=95?'var(--warn)':'var(--danger)';
+    const last=s.last_down?('last down '+dfmt(s.last_down,'full')):'no downtime recorded';
+    const row=document.createElement('div');row.className='hrow';
+    row.innerHTML=`<div class="hname"><span class="dot ${s.up_now?'ok':'bad'}"></span>${esc(s.name)}
+        <span class="kind ${s.kind}">${s.kind}</span></div>
+      <div class="hpct" style="color:${pcol}">${pct}</div>
+      <div class="hstrip">${strip}</div>
+      <div class="hmeta">${esc(last)}</div>`;
+    box.appendChild(row)});}
+
 function renderAll(rebuild){
   buildServerCards();updateTz();renderPorts();
   if(rebuild)buildChips()}
@@ -452,8 +566,9 @@ function openSettings(){
     opt.textContent=`UTC${sign}${hh}:${mm}`+(o===8?' (Beijing/Shanghai)':o===9?' (Tokyo)':o===0?' (UTC)':'');
     tzs.appendChild(opt)}
   tzs.value=s.settings.tz_offset;
-  const ret=OV.retention||{m1:8,h1:120,d1:0};
+  const ret=OV.retention||{m1:8,h1:120,d1:0,ips:60,health:120};
   $('ret-m1').value=ret.m1;$('ret-h1').value=ret.h1;$('ret-d1').value=ret.d1;
+  $('ret-ips').value=ret.ips;$('ret-health').value=ret.health;
   $('settings-ov').classList.add('show')}
 function closeSettings(){$('settings-ov').classList.remove('show')}
 
@@ -472,7 +587,8 @@ async function changePassword(){
   else toast(j.error||'Failed')}
 
 async function saveRetention(){
-  const vals={m1:+$('ret-m1').value,h1:+$('ret-h1').value,d1:+$('ret-d1').value};
+  const vals={m1:+$('ret-m1').value,h1:+$('ret-h1').value,d1:+$('ret-d1').value,
+              ips:+$('ret-ips').value,health:+$('ret-health').value};
   for(const[k,v]of Object.entries(vals))
     if(!Number.isInteger(v)||v<0||v>3650){toast(`${k}: enter 0–3650 days`);return}
   const r=await api('/api/retention',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -502,10 +618,12 @@ async function logout(){await api('/api/logout',{method:'POST'});location.reload
 setInterval(tickClock,1000);tickClock();
 $('bw-gran').addEventListener('change',e=>{bwGran=e.target.value;refreshSpeed()});
 $('us-gran').addEventListener('change',e=>{usGran=e.target.value;refreshUsage()});
+$('src-all').addEventListener('change',e=>{srcAll=e.target.checked;refreshSources()});
 buildSegs();
-loadOverview().then(refreshCharts);
+loadOverview().then(()=>{refreshCharts();refreshExtras()});
 setInterval(()=>loadOverview(false),10000);
 setInterval(refreshCharts,30000);
+setInterval(refreshExtras,60000);
 </script>
 </body>
 </html>

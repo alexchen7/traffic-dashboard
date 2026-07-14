@@ -22,6 +22,10 @@
 #     bash install.sh archive [--port 15100]           # on the storage server
 #     bash /opt/traffic-dash/install.sh link-archive   # then on the dashboard host
 #
+#   Push the latest meter to every registered node over SSH (needed after a
+#   meter upgrade, e.g. to enable per-source-IP tracking):
+#     bash /opt/traffic-dash/install.sh update-nodes
+#
 #   Remove everything:
 #     bash install.sh uninstall
 #
@@ -367,6 +371,42 @@ cmd_import() {
 }
 
 # --------------------------------------------------------------------------
+# update-nodes: refresh meter.py on the local host + every SSH-registered node
+# --------------------------------------------------------------------------
+cmd_update_nodes() {
+  need_root
+  [ -f "$DASH_DIR/config.json" ] || die "no dashboard here — run 'install.sh dashboard' first"
+  # refresh the local meter copy from repo (or from the freshly-fetched dashboard tree)
+  if [ -f "$(dirname "$0")/meter/meter.py" ]; then
+    cp "$(dirname "$0")/meter/meter.py" "$METER_DIR/meter.py"
+  else
+    fetch "meter/meter.py" "$METER_DIR/meter.py" || die "could not fetch meter.py"
+  fi
+  ok "local meter updated"
+  # push to each ssh node, re-run ensure so the new nft sets/rules are created
+  python3 - <<'PYEOF' | while IFS='|' read -r id host port src; do
+import json
+cfg = json.load(open("/opt/traffic-dash/config.json"))
+for s in cfg["servers"]:
+    c = s.get("conn", {})
+    if c.get("mode") == "ssh":
+        print(f"{s['id']}|{c['host']}|{c.get('port',22)}|{s.get('source','none')}")
+PYEOF
+    [ -n "$id" ] || continue
+    say "updating $id ($host:$port)"
+    SSH=(ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -p "$port" "root@${host}")
+    if "${SSH[@]}" "mkdir -p $METER_DIR" 2>/dev/null \
+       && scp -P "$port" -q -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$METER_DIR/meter.py" "root@${host}:$METER_DIR/meter.py" 2>/dev/null \
+       && "${SSH[@]}" "python3 $METER_DIR/meter.py ensure --source $src >/dev/null" 2>/dev/null; then
+      ok "  $id updated"
+    else
+      warn "  $id FAILED — check SSH connectivity; rerun later"
+    fi
+  done
+  ok "done — per-source-IP data appears within ~30s for reachable nodes"
+}
+
+# --------------------------------------------------------------------------
 # archive: long-term storage service on a big server + link from dashboard
 # --------------------------------------------------------------------------
 ARCHIVE_DIR=/opt/traffic-archive
@@ -499,6 +539,7 @@ case "$CMD" in
   import)     cmd_import "$FILE_ARG";;
   archive)      cmd_archive;;
   link-archive) cmd_link_archive;;
+  update-nodes) cmd_update_nodes;;
   uninstall)  cmd_uninstall;;
   *)          usage;;
 esac
