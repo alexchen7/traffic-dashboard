@@ -86,7 +86,10 @@ Two analytics panels on the dashboard:
   per-IP buckets. The dashboard geolocates the top IPs via ip-api's batch
   endpoint (cached in the DB) and shows country cards with share bars plus a
   top-50 source-IP table. Toggle a single server or all servers, over 24h/7d/30d/90d.
-  Relays see real end-user IPs; exit/client nodes mostly see the relay's IP.
+  Selecting a port chip in the Bandwidth panel filters the sources view to that
+  port (the meter keeps per-port source-IP sets, `si_<port>`/`so_<port>`, so
+  traffic is attributed to the exact port it used). Relays see real end-user
+  IPs; exit/client nodes mostly see the relay's IP.
 - **Node health** — every 10 s sample records an up/down tick per node into a
   per-minute `health` table. The panel shows uptime %, a 96-segment status
   strip (green/amber/red/grey-for-no-data) and the last recorded downtime,

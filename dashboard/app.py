@@ -65,7 +65,13 @@ def init_db():
         c.execute(f"CREATE TABLE IF NOT EXISTS {t} (entity TEXT, ts INTEGER, din INTEGER, dout INTEGER, PRIMARY KEY(entity, ts))")
     c.execute("CREATE TABLE IF NOT EXISTS raw_last (entity TEXT PRIMARY KEY, ts INTEGER, bin INTEGER, bout INTEGER)")
     c.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")
-    c.execute("CREATE TABLE IF NOT EXISTS ips (sid TEXT, ip TEXT, day INTEGER, din INTEGER, dout INTEGER, PRIMARY KEY(sid, ip, day))")
+    # ips gained a "port" column in v3; recreate the (portless v2) table if
+    # present so per-port attribution works. The dropped data is at most a day
+    # or two of aggregate per-IP counts, superseded by per-port collection.
+    cols = [r[1] for r in c.execute("PRAGMA table_info(ips)")]
+    if cols and "port" not in cols:
+        c.execute("DROP TABLE ips")
+    c.execute("CREATE TABLE IF NOT EXISTS ips (sid TEXT, ip TEXT, port INTEGER, day INTEGER, din INTEGER, dout INTEGER, PRIMARY KEY(sid, ip, port, day))")
     c.execute("CREATE TABLE IF NOT EXISTS health (sid TEXT, ts INTEGER, ok INTEGER, total INTEGER, PRIMARY KEY(sid, ts))")
     c.commit()
     # ---- migrate v1 entities -> v2 namespaced ----
@@ -161,11 +167,11 @@ def record(c, entity, ts, cum_in, cum_out, last, tzoff):
         RATES[entity] = (round(din / dt), round(dout / dt), ts)
 
 
-def record_ip(c, sid, ip, ts, cum_in, cum_out, last, tzoff):
-    """Delta a per-source-IP cumulative counter into a daily bucket."""
+def record_ip(c, sid, ip, port, ts, cum_in, cum_out, last, tzoff):
+    """Delta a per-source-IP-per-port cumulative counter into a daily bucket."""
     if not IP_RE.match(ip):
         return
-    key = f"{sid}:ip:{ip}"
+    key = f"{sid}:ip:{port}:{ip}"
     prev = last.get(key)
     last[key] = (ts, cum_in, cum_out)
     if prev is None:
@@ -181,9 +187,9 @@ def record_ip(c, sid, ip, ts, cum_in, cum_out, last, tzoff):
     if din == 0 and dout == 0:
         return
     day = ((ts + tzoff * 3600) // 86400) * 86400 - tzoff * 3600
-    c.execute("""INSERT INTO ips(sid,ip,day,din,dout) VALUES(?,?,?,?,?)
-                 ON CONFLICT(sid,ip,day) DO UPDATE SET din=din+excluded.din, dout=dout+excluded.dout""",
-              (sid, ip, day, din, dout))
+    c.execute("""INSERT INTO ips(sid,ip,port,day,din,dout) VALUES(?,?,?,?,?,?)
+                 ON CONFLICT(sid,ip,port,day) DO UPDATE SET din=din+excluded.din, dout=dout+excluded.dout""",
+              (sid, ip, port, day, din, dout))
 
 
 def record_health(c, sid, ts, ok):
@@ -277,11 +283,18 @@ def collector():
                 ts = int(time.time())
                 for port, v in r.get("ports", {}).items():
                     record(c, f"{sid}:port:{port}", ts, v.get("in", 0), v.get("out", 0), last, tzoff)
-                for ip, v in (r.get("ips") or {}).items():
+                for port_str, ipmap in (r.get("ips") or {}).items():
                     try:
-                        record_ip(c, sid, str(ip), ts, int(v.get("in", 0)), int(v.get("out", 0)), last, tzoff)
-                    except (TypeError, ValueError, AttributeError):
-                        pass
+                        port = int(port_str)
+                    except (TypeError, ValueError):
+                        continue
+                    if not isinstance(ipmap, dict):
+                        continue
+                    for ip, v in ipmap.items():
+                        try:
+                            record_ip(c, sid, str(ip), port, ts, int(v.get("in", 0)), int(v.get("out", 0)), last, tzoff)
+                        except (TypeError, ValueError, AttributeError):
+                            pass
                 h = r.get("host", {})
                 record(c, sid, ts, h.get("rx", 0), h.get("tx", 0), last, tzoff)
                 if r.get("names"):
@@ -556,7 +569,7 @@ def export_payload():
                 c.execute(f"SELECT entity,ts,din,dout FROM {t} ORDER BY entity,ts")]
             for t in DATA_TABLES}
     raw_last = [list(r) for r in c.execute("SELECT entity,ts,bin,bout FROM raw_last")]
-    ips = [list(r) for r in c.execute("SELECT sid,ip,day,din,dout FROM ips ORDER BY sid,ip,day")]
+    ips = [list(r) for r in c.execute("SELECT sid,ip,port,day,din,dout FROM ips ORDER BY sid,ip,port,day")]
     health = [list(r) for r in c.execute("SELECT sid,ts,ok,total FROM health ORDER BY sid,ts")]
     row = c.execute("SELECT v FROM meta WHERE k='settings'").fetchone()
     settings = json.loads(row[0]) if row else {"servers": {}}
@@ -695,13 +708,16 @@ def import_payload(d):
     ips_rows = []
     for r in d.get("ips") or []:
         try:
-            sid_, ip_, day_, di_, do_ = str(r[0]), str(r[1]), int(r[2]), int(r[3]), int(r[4])
+            if len(r) >= 6:                       # v3: sid,ip,port,day,din,dout
+                sid_, ip_, port_, day_, di_, do_ = str(r[0]), str(r[1]), int(r[2]), int(r[3]), int(r[4]), int(r[5])
+            else:                                 # v2 legacy: sid,ip,day,din,dout -> port 0
+                sid_, ip_, port_, day_, di_, do_ = str(r[0]), str(r[1]), 0, int(r[2]), int(r[3]), int(r[4])
         except (TypeError, ValueError, IndexError):
             continue
-        if re.fullmatch(r"[a-z0-9_]+", sid_) and IP_RE.match(ip_) and day_ >= 0 and di_ >= 0 and do_ >= 0:
-            ips_rows.append((sid_, ip_, day_, di_, do_))
-    c.executemany("""INSERT INTO ips(sid,ip,day,din,dout) VALUES(?,?,?,?,?)
-                     ON CONFLICT(sid,ip,day) DO UPDATE SET din=excluded.din, dout=excluded.dout""", ips_rows)
+        if re.fullmatch(r"[a-z0-9_]+", sid_) and IP_RE.match(ip_) and port_ >= 0 and day_ >= 0 and di_ >= 0 and do_ >= 0:
+            ips_rows.append((sid_, ip_, port_, day_, di_, do_))
+    c.executemany("""INSERT INTO ips(sid,ip,port,day,din,dout) VALUES(?,?,?,?,?,?)
+                     ON CONFLICT(sid,ip,port,day) DO UPDATE SET din=excluded.din, dout=excluded.dout""", ips_rows)
     hp_rows = []
     for r in d.get("health") or []:
         try:
@@ -1088,7 +1104,8 @@ class Handler(BaseHTTPRequestHandler):
         return series_data(entity, gran, rng)
 
     def sources(self, q):
-        """Per-source-IP traffic + per-country aggregation for one server or all."""
+        """Per-source-IP traffic + per-country aggregation. Optionally filtered
+        to one server and one port (port filter only applies with a server)."""
         sid = q.get("server", "")
         if sid and sid not in SERVERS:
             return {"error": "unknown server"}
@@ -1096,9 +1113,15 @@ class Handler(BaseHTTPRequestHandler):
             days = max(1, min(int(q.get("days", 7)), 365))
         except ValueError:
             days = 7
+        port = None
+        if sid and str(q.get("port", "")).isdigit():
+            port = int(q["port"])
         since = int(time.time()) - days * 86400
         c = db()
-        if sid:
+        if sid and port is not None:
+            rows = c.execute("SELECT ip, SUM(din), SUM(dout) FROM ips WHERE sid=? AND port=? AND day>=? GROUP BY ip",
+                             (sid, port, since)).fetchall()
+        elif sid:
             rows = c.execute("SELECT ip, SUM(din), SUM(dout) FROM ips WHERE sid=? AND day>=? GROUP BY ip",
                              (sid, since)).fetchall()
         else:
@@ -1129,7 +1152,7 @@ class Handler(BaseHTTPRequestHandler):
             cn["share"] = round(100 * cn["total"] / denom, 2)
             clist.append(cn)
         clist.sort(key=lambda x: -x["total"])
-        return {"days": days, "server": sid or "all", "total": total_all,
+        return {"days": days, "server": sid or "all", "port": port, "total": total_all,
                 "ips_tracked": len(rows), "top": top, "other": other,
                 "countries": clist[:30]}
 

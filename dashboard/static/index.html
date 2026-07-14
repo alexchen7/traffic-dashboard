@@ -396,7 +396,7 @@ function buildChips(){
   const box=$('entity-chips');box.innerHTML='';const s=srv();if(!s)return;
   const items=[[s.id,'Total'],...s.ports.map(p=>[`${s.id}:port:${p.port}`,p.name])];
   items.forEach(([id,lbl])=>{const c=document.createElement('span');c.className='chip'+(id===entity?' on':'');
-    c.textContent=lbl;c.title=id;c.onclick=()=>{entity=id;buildChips();refreshCharts()};box.appendChild(c)})}
+    c.textContent=lbl;c.title=id;c.onclick=()=>{entity=id;buildChips();refreshCharts();refreshSources()};box.appendChild(c)})}
 
 function chartOpts(fmt,rangeSec){return{responsive:true,maintainAspectRatio:false,animation:false,
   interaction:{mode:'index',intersect:false},
@@ -492,11 +492,22 @@ function flagImg(cc,title){
   const l=cc.toLowerCase();
   return `<img class="flag-img" src="https://flagcdn.com/32x24/${l}.png" srcset="https://flagcdn.com/64x48/${l}.png 2x" alt="${esc(cc)}" title="${esc(title||cc)}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'flag-cc',textContent:this.alt}))">`}
 
+function selectedPort(){  // port number if a port chip is active in Bandwidth, else null
+  const s=srv();if(!s||srcAll)return null;
+  const m=entity&&entity.match(/^[a-z0-9_]+:port:(\d+)$/);
+  return m?m[1]:null}
+function portName(port){
+  const s=srv();if(!s)return 'Port '+port;
+  const p=(s.ports||[]).find(x=>String(x.port)===String(port));
+  return p?p.name:'Port '+port}
+
 async function refreshSources(){
   const s=srv();if(!s&&!srcAll)return;
-  const qs=`days=${srcDays}`+(srcAll?'':`&server=${sel}`);
+  const port=selectedPort();
+  const qs=`days=${srcDays}`+(srcAll?'':`&server=${sel}`)+(port?`&port=${port}`:'');
   let d;try{d=await (await api('/api/sources?'+qs)).json()}catch(e){return}
-  $('src-note').textContent=`${srcAll?'all servers':s.name} · ${d.ips_tracked.toLocaleString()} IPs · last ${srcDays}d`;
+  const scope=srcAll?'all servers':(port?`${s.name} · ${esc(portName(port))}`:s.name);
+  $('src-note').textContent=`${scope} · ${d.ips_tracked.toLocaleString()} IPs · last ${srcDays}d`;
   const cbox=$('country-cards');cbox.innerHTML='';
   if(!d.countries.length){cbox.innerHTML='<div class="sub">No source-IP data yet. Nodes need the updated meter; data appears within ~10s of the next sample.</div>'}
   d.countries.forEach(cn=>{

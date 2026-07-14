@@ -13,16 +13,17 @@ touches other tables, no service restarts):
   meter_pre  (prerouting,  -150): bytes addressed to port  -> in_<p>
   meter_post (postrouting,  200): bytes leaving with sport -> out_<p>
 
-Per-source-IP tracking (v3): two dynamic sets with per-element counters,
-src_in (keyed on saddr, prerouting) and src_out (keyed on daddr, postrouting),
-fed by one rule per protocol over the whole monitored-port set. Elements
-expire after 26h idle so the sets stay bounded. If the local nft is too old
-for stateful set counters the sets simply don't exist and `report` omits
-"ips" — everything else keeps working.
+Per-source-IP tracking (v3): per-PORT dynamic sets with per-element counters —
+si_<p> (inbound saddr) and so_<p> (outbound daddr) — so each source IP's bytes
+are attributed to the specific port it used. The set update is folded into the
+same rule as the port byte counter. Elements expire after 26h idle so the sets
+stay bounded. `report` emits ips as {port: {ip: {in,out}}}. If the local nft is
+too old for stateful set counters the sets simply don't exist and "ips" is
+omitted — everything else keeps working.
 
 Usage: meter.py [ensure|report] [--source S] [--include CSV] [--exclude CSV]
 """
-import json, subprocess, sys, time
+import json, re, subprocess, sys, time
 
 TABLE = "traffic_meter"
 XUI_DB = "/etc/x-ui/x-ui.db"
@@ -124,29 +125,56 @@ def chain_mentions(chain, needle):
     return p.returncode == 0 and needle in (p.stdout or "")
 
 
+def list_sets():
+    out = set()
+    j = nft_json(f"list sets table ip {TABLE}", check=False)
+    if not j:
+        return out
+    for item in j.get("nftables", []):
+        s = item.get("set")
+        if s and s.get("name"):
+            out.add(s["name"])
+    return out
+
+
 def ensure(source, include, exclude):
     ports, names = discover(source, include, exclude)
+    want = set(ports)
     if not table_exists():
         sh(f"nft add table ip {TABLE}")
     sh(f"nft add chain ip {TABLE} meter_pre '{{ type filter hook prerouting priority -150 ; policy accept ; }}'", check=False)
     sh(f"nft add chain ip {TABLE} meter_post '{{ type filter hook postrouting priority 200 ; policy accept ; }}'", check=False)
-    # per-source-IP dynamic sets (needs nft with stateful set counters; if
-    # unsupported these fail silently and per-IP reporting is skipped)
-    for sname in ("src_in", "src_out"):
-        sh(f"nft add set ip {TABLE} {sname} '{{ type ipv4_addr ; flags dynamic,timeout ; timeout 26h ; size 65535 ; counter ; }}'", check=False)
+    # Per-PORT source-IP dynamic sets: si_<p> (inbound saddr), so_<p> (outbound
+    # daddr). One pair per monitored port so traffic can be attributed to a
+    # specific port. Needs nft with stateful set counters; if unsupported the
+    # adds fail silently (check=False) and per-IP reporting is simply omitted.
+    have_sets = list_sets()
+    for legacy in ("src_in", "src_out"):        # drop older meter's global sets
+        if legacy in have_sets:
+            sh(f"nft delete set ip {TABLE} {legacy}", check=False)
+    for p in ports:
+        for pre in ("si", "so"):
+            if f"{pre}_{p}" not in have_sets:
+                sh(f"nft add set ip {TABLE} {pre}_{p} '{{ type ipv4_addr ; flags dynamic,timeout ; timeout 26h ; size 65535 ; counter ; }}'", check=False)
+    for sname in have_sets:                      # drop sets for unmonitored ports
+        m = re.match(r"(?:si|so)_(\d+)$", sname)
+        if m and int(m.group(1)) not in want:
+            sh(f"nft delete set ip {TABLE} {sname}", check=False)
     have = existing_counters()
     batch = [f"add counter ip {TABLE} {d}_{p}" for p in ports for d in ("in", "out")
              if f"{d}_{p}" not in have]
     if batch:
         sh("nft -f - <<'EOF'\n" + "\n".join(batch) + "\nEOF")
-    want = set(ports)
-    if chain_ports("meter_pre") != want or chain_ports("meter_post") != want:
+    # rebuild rules if the monitored set changed OR the per-port set-update
+    # rules aren't present yet (e.g. upgrade from a portless meter)
+    need = (chain_ports("meter_pre") != want or chain_ports("meter_post") != want
+            or (ports and not chain_mentions("meter_pre", "@si_")))
+    if need:
         lines = [f"flush chain ip {TABLE} meter_pre", f"flush chain ip {TABLE} meter_post"]
         for p in ports:
-            lines.append(f'add rule ip {TABLE} meter_pre tcp dport {p} counter name "in_{p}"')
-            lines.append(f'add rule ip {TABLE} meter_pre udp dport {p} counter name "in_{p}"')
-            lines.append(f'add rule ip {TABLE} meter_post tcp sport {p} counter name "out_{p}"')
-            lines.append(f'add rule ip {TABLE} meter_post udp sport {p} counter name "out_{p}"')
+            for proto in ("tcp", "udp"):
+                lines.append(f'add rule ip {TABLE} meter_pre {proto} dport {p} counter name "in_{p}" update @si_{p} {{ ip saddr }}')
+                lines.append(f'add rule ip {TABLE} meter_post {proto} sport {p} counter name "out_{p}" update @so_{p} {{ ip daddr }}')
         sh("nft -f - <<'EOF'\n" + "\n".join(lines) + "\nEOF")
         # drop counters for ports we no longer monitor (now unreferenced)
         for name in existing_counters():
@@ -156,15 +184,6 @@ def ensure(source, include, exclude):
                 continue
             if cp not in want:
                 sh(f"nft delete counter ip {TABLE} {name}", check=False)
-    # per-IP set-update rules (re-added after any chain rebuild above)
-    if ports:
-        pset = "{ " + ", ".join(str(p) for p in ports) + " }"
-        if not chain_mentions("meter_pre", "@src_in"):
-            sh(f"nft add rule ip {TABLE} meter_pre 'tcp dport {pset} update @src_in {{ ip saddr }}'", check=False)
-            sh(f"nft add rule ip {TABLE} meter_pre 'udp dport {pset} update @src_in {{ ip saddr }}'", check=False)
-        if not chain_mentions("meter_post", "@src_out"):
-            sh(f"nft add rule ip {TABLE} meter_post 'tcp sport {pset} update @src_out {{ ip daddr }}'", check=False)
-            sh(f"nft add rule ip {TABLE} meter_post 'udp sport {pset} update @src_out {{ ip daddr }}'", check=False)
     return ports, names
 
 
@@ -212,7 +231,7 @@ def set_elems(name):
     return out
 
 
-MAX_IPS = 512  # cap report payload; long tail beyond this is negligible
+MAX_IPS = 2000  # cap total (port,ip) pairs in the report payload
 
 
 def report(source, include, exclude):
@@ -227,14 +246,26 @@ def report(source, include, exclude):
         d, p = c["name"].split("_", 1)
         if p in pset:
             out_ports.setdefault(p, {})[d] = c.get("bytes", 0)
+    # per-port source-IP maps: {port: {ip: {"in":x,"out":y}}}
     ips = {}
-    for ip, b in set_elems("src_in").items():
-        ips.setdefault(ip, {})["in"] = b
-    for ip, b in set_elems("src_out").items():
-        ips.setdefault(ip, {})["out"] = b
-    if len(ips) > MAX_IPS:
-        ips = dict(sorted(ips.items(), key=lambda kv: kv[1].get("in", 0) + kv[1].get("out", 0),
-                          reverse=True)[:MAX_IPS])
+    total_pairs = 0
+    for p in ports:
+        pd = {}
+        for ip, b in set_elems(f"si_{p}").items():
+            pd.setdefault(ip, {})["in"] = b
+        for ip, b in set_elems(f"so_{p}").items():
+            pd.setdefault(ip, {})["out"] = b
+        if pd:
+            ips[str(p)] = pd
+            total_pairs += len(pd)
+    if total_pairs > MAX_IPS:                      # keep the heaviest pairs
+        flat = [(pt, ip, v.get("in", 0) + v.get("out", 0))
+                for pt, pd in ips.items() for ip, v in pd.items()]
+        flat.sort(key=lambda x: x[2], reverse=True)
+        keep = {(pt, ip) for pt, ip, _ in flat[:MAX_IPS]}
+        ips = {pt: {ip: v for ip, v in pd.items() if (pt, ip) in keep}
+               for pt, pd in ips.items()}
+        ips = {pt: pd for pt, pd in ips.items() if pd}
     iface = default_iface()
     rx, tx = host_bytes(iface)
     print(json.dumps({"ts": int(time.time()), "ports": out_ports,

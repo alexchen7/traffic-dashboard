@@ -193,7 +193,10 @@ MemoryMax=384M
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
-  systemctl enable --now traffic-dash.service
+  systemctl enable traffic-dash.service >/dev/null 2>&1 || true
+  # restart (not just enable --now) so an installer rerun actually loads the
+  # freshly-fetched app.py — enable --now is a no-op on an already-running unit
+  systemctl restart traffic-dash.service
   sleep 3
   systemctl is-active --quiet traffic-dash || die "traffic-dash failed to start (journalctl -u traffic-dash)"
   ok "dashboard service running on 127.0.0.1:${http_port}"
@@ -394,9 +397,12 @@ for s in cfg["servers"]:
 PYEOF
     [ -n "$id" ] || continue
     say "updating $id ($host:$port)"
-    SSH=(ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -p "$port" "root@${host}")
+    # -n on ssh (and </dev/null on scp) is essential: without it ssh would
+    # read and consume the rest of the piped node list, ending the loop after
+    # the first node.
+    SSH=(ssh -n -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -p "$port" "root@${host}")
     if "${SSH[@]}" "mkdir -p $METER_DIR" 2>/dev/null \
-       && scp -P "$port" -q -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$METER_DIR/meter.py" "root@${host}:$METER_DIR/meter.py" 2>/dev/null \
+       && scp -P "$port" -q -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$METER_DIR/meter.py" "root@${host}:$METER_DIR/meter.py" </dev/null 2>/dev/null \
        && "${SSH[@]}" "python3 $METER_DIR/meter.py ensure --source $src >/dev/null" 2>/dev/null; then
       ok "  $id updated"
     else
