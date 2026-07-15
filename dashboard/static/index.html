@@ -134,6 +134,15 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
 .hstrip i.part{background:var(--warn)}
 .hstrip i.down{background:var(--danger)}
 .hmeta{font-size:.72rem;color:var(--muted);width:190px;text-align:right}
+/* custom range bar */
+.crbar{display:none;align-items:center;gap:10px;flex-wrap:wrap;background:var(--panel);border:1px solid var(--border);
+  border-radius:12px;padding:11px 15px;margin-bottom:16px;box-shadow:0 4px 16px var(--shadow)}
+.crbar.show{display:flex}
+.crbar label{font-size:.74rem;color:var(--muted)}
+.crbar input[type=datetime-local]{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px 9px;font-size:.8rem}
+.crbar .cr-active{font-size:.74rem;color:var(--accent2);font-weight:600}
+.seg button.cr{font-weight:600}
+.seg button.cr.on{background:var(--accent2)}
 @media(max-width:700px){body{padding:14px}.chartbox{height:240px}}
 </style>
 </head>
@@ -153,8 +162,18 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
     <option value="nord">Nord</option><option value="dracula">Dracula</option>
     <option value="solar">Solar Dawn</option><option value="ocean">Ocean</option>
   </select>
+  <button id="cr-toggle" onclick="toggleCrBar()">&#128197; Custom range</button>
   <button onclick="openSettings()">&#9881; Settings</button>
   <button onclick="logout()">Sign out</button>
+</div>
+
+<div class="crbar" id="cr-bar">
+  <label>From</label><input type="datetime-local" id="cr-from" step="1">
+  <label>To</label><input type="datetime-local" id="cr-to" step="1">
+  <button class="primary" onclick="applyCustom()">Apply</button>
+  <button onclick="clearCustom()">Clear</button>
+  <span class="cr-active" id="cr-active"></span>
+  <span class="sub" id="cr-tz"></span>
 </div>
 
 <div class="servers" id="server-cards"></div>
@@ -290,6 +309,7 @@ let OV=null, sel=null, entity=null;
 let bwRange=3600, bwGran='auto', usRange=86400, usGran='auto', dragId=null;
 let speedChart=null, usageChart=null;
 let srcDays=7, srcAll=false, hlDays=1;
+let customStart=null, customEnd=null;   // epochs when a custom snapshot is active
 const RANGES=[['1h',3600],['6h',21600],['24h',86400],['7d',604800],['30d',2592000]];
 const DAYRANGES=[['24h',1],['7d',7],['30d',30],['90d',90]];
 
@@ -343,10 +363,39 @@ function seg(el,cur,cb){el.innerHTML='';RANGES.forEach(([lbl,sec])=>{const b=doc
   b.textContent=lbl;b.className=sec===cur?'on':'';b.onclick=()=>cb(sec);el.appendChild(b)})}
 function dayseg(el,cur,cb){el.innerHTML='';DAYRANGES.forEach(([lbl,d])=>{const b=document.createElement('button');
   b.textContent=lbl;b.className=d===cur?'on':'';b.onclick=()=>cb(d);el.appendChild(b)})}
-function buildSegs(){seg($('bw-range'),bwRange,s=>{bwRange=s;buildSegs();refreshSpeed()});
-  seg($('us-range'),usRange,s=>{usRange=s;buildSegs();refreshUsage()});
-  dayseg($('src-range'),srcDays,d=>{srcDays=d;buildSegs();refreshSources()});
+function buildSegs(){
+  // clicking any bandwidth/usage/sources preset exits a custom snapshot and goes live
+  seg($('bw-range'),customStart!=null?-1:bwRange,s=>{exitCustom();bwRange=s;buildSegs();refreshSpeed()});
+  seg($('us-range'),customStart!=null?-1:usRange,s=>{exitCustom();usRange=s;buildSegs();refreshUsage()});
+  dayseg($('src-range'),customStart!=null?-1:srcDays,d=>{exitCustom();srcDays=d;buildSegs();refreshSources()});
   dayseg($('hl-range'),hlDays,d=>{hlDays=d;buildSegs();refreshHealth()})}
+
+/* ---------- custom range (shared: Bandwidth / Data used / Traffic sources) ---------- */
+function pad(n){return String(n).padStart(2,'0')}
+function epochToInput(ts){const off=dispOff();const d=new Date((ts+(off==null?0:off*3600))*1000);
+  const g=off==null?[d.getFullYear(),d.getMonth()+1,d.getDate(),d.getHours(),d.getMinutes(),d.getSeconds()]
+                   :[d.getUTCFullYear(),d.getUTCMonth()+1,d.getUTCDate(),d.getUTCHours(),d.getUTCMinutes(),d.getUTCSeconds()];
+  return `${g[0]}-${pad(g[1])}-${pad(g[2])}T${pad(g[3])}:${pad(g[4])}:${pad(g[5])}`}
+function inputToEpoch(str){if(!str)return null;
+  const m=str.match(/^(\d+)-(\d+)-(\d+)T(\d+):(\d+)(?::(\d+))?$/);if(!m)return null;
+  const y=+m[1],mo=+m[2],da=+m[3],h=+m[4],mi=+m[5],s=+(m[6]||0);const off=dispOff();
+  if(off==null)return Math.floor(new Date(y,mo-1,da,h,mi,s).getTime()/1000);
+  return Math.floor(Date.UTC(y,mo-1,da,h,mi,s)/1000)-off*3600}
+function toggleCrBar(){const bar=$('cr-bar');const show=!bar.classList.contains('show');
+  bar.classList.toggle('show',show);
+  if(show){$('cr-tz').textContent='times in '+(dtz==='local'?'browser time':dtz==='server'?'server TZ':offLabel(dispOff()));
+    if(!$('cr-from').value){const now=Math.floor(Date.now()/1000);
+      $('cr-from').value=epochToInput(now-86400);$('cr-to').value=epochToInput(now)}}}
+function applyCustom(){
+  const a=inputToEpoch($('cr-from').value),b=inputToEpoch($('cr-to').value);
+  if(a==null||b==null){toast('Enter both From and To');return}
+  if(b<=a){toast('“To” must be after “From”');return}
+  customStart=a;customEnd=b;
+  $('cr-toggle').style.borderColor='var(--accent2)';
+  $('cr-active').textContent='snapshot '+dfmt(a,'full')+'  →  '+dfmt(b,'full');
+  buildSegs();refreshCharts();refreshSources();toast('Custom range applied (paused live refresh)')}
+function exitCustom(){customStart=customEnd=null;$('cr-active').textContent='';$('cr-toggle').style.borderColor=''}
+function clearCustom(){exitCustom();buildSegs();refreshCharts();refreshSources();toast('Back to live')}
 
 function srv(){return OV?OV.servers.find(s=>s.id===sel):null}
 
@@ -398,34 +447,42 @@ function buildChips(){
   items.forEach(([id,lbl])=>{const c=document.createElement('span');c.className='chip'+(id===entity?' on':'');
     c.textContent=lbl;c.title=id;c.onclick=()=>{entity=id;buildChips();refreshCharts();refreshSources()};box.appendChild(c)})}
 
-function chartOpts(fmt,rangeSec){return{responsive:true,maintainAspectRatio:false,animation:false,
+function chartOpts(fmt,xmin,xmax){const span=xmax-xmin;return{responsive:true,maintainAspectRatio:false,animation:false,
   interaction:{mode:'index',intersect:false},
   plugins:{legend:{labels:{color:cssv('--muted'),boxWidth:12,font:{size:11}}},
     tooltip:{backgroundColor:cssv('--panel2'),borderColor:cssv('--border'),borderWidth:1,
       titleColor:cssv('--text'),bodyColor:cssv('--text'),
       callbacks:{title:items=>dfmt(items[0].parsed.x,'full'),
                  label:c=>c.dataset.label+': '+fmt(c.parsed.y)}}},
-  scales:{x:{type:'linear',min:Math.floor(Date.now()/1000)-rangeSec,max:Math.floor(Date.now()/1000),
+  scales:{x:{type:'linear',min:xmin,max:xmax,
       ticks:{color:cssv('--tick'),maxTicksLimit:8,font:{size:10},
-      callback:v=>rangeSec<=86400?dfmt(v,'time'):dfmt(v,'date')},
+      callback:v=>span<=86400?dfmt(v,'time'):dfmt(v,'date')},
       grid:{color:cssv('--grid')}},
     y:{beginAtZero:true,ticks:{color:cssv('--tick'),font:{size:10},callback:v=>fmt(v)},grid:{color:cssv('--grid')}}}}}
 
+// active window for the bandwidth/usage/sources panels: custom snapshot or trailing preset
+function win(rangeSec){
+  if(customStart!=null)return{start:customStart,end:customEnd,span:customEnd-customStart,custom:true};
+  const now=Math.floor(Date.now()/1000);return{start:now-rangeSec,end:now,span:rangeSec,custom:false}}
+function seriesQ(w){return w.custom?`start=${w.start}&end=${w.end}`:`range=${w.span}`}
+
 async function refreshSpeed(){
   if(!entity)return;
-  const g=bwGran==='auto'?autoBw(bwRange):bwGran;
-  const d=await (await api(`/api/series?entity=${entity}&gran=${g}&range=${bwRange}`)).json();
+  const w=win(bwRange);
+  const g=bwGran==='auto'?autoBw(w.span):bwGran;
+  const d=await (await api(`/api/series?entity=${entity}&gran=${g}&${seriesQ(w)}`)).json();
   const mk=(idx,color)=>({data:d.points.map(p=>({x:p[0],y:p[idx]/d.bucket})),borderColor:color,
     backgroundColor:color.replace(')',' / .12)').replace('rgb','rgb'),fill:true,pointRadius:0,borderWidth:1.6,tension:.25});
   const cIn=cssv('--accent'),cOut=cssv('--accent2');
   const ds=[Object.assign(mk(1,hexRgb(cIn)),{label:'Inbound'}),Object.assign(mk(2,hexRgb(cOut)),{label:'Outbound'})];
   if(speedChart)speedChart.destroy();
-  speedChart=new Chart($('speedChart'),{type:'line',data:{datasets:ds},options:chartOpts(fmtRate,bwRange)})}
+  speedChart=new Chart($('speedChart'),{type:'line',data:{datasets:ds},options:chartOpts(fmtRate,d.start,d.end)})}
 
 async function refreshUsage(){
   if(!entity)return;
-  const g=usGran==='auto'?autoUs(usRange):usGran;
-  const d=await (await api(`/api/series?entity=${entity}&gran=${g}&range=${usRange}`)).json();
+  const w=win(usRange);
+  const g=usGran==='auto'?autoUs(w.span):usGran;
+  const d=await (await api(`/api/series?entity=${entity}&gran=${g}&${seriesQ(w)}`)).json();
   const s=srv();
   const nm=entity===s.id?'Total':(s.ports.find(p=>`${s.id}:port:${p.port}`===entity)||{}).name||entity;
   $('usage-note').textContent=`${nm} · per ${ {'10s':'10 sec','1m':'minute','1h':'hour','1d':'day'}[g] }`;
@@ -433,7 +490,7 @@ async function refreshUsage(){
   const ds=[{label:'In',data:d.points.map(p=>({x:p[0],y:p[1]})),backgroundColor:cIn.replace(')',' / .75)'),stack:'s'},
             {label:'Out',data:d.points.map(p=>({x:p[0],y:p[2]})),backgroundColor:cOut.replace(')',' / .75)'),stack:'s'}];
   if(usageChart)usageChart.destroy();
-  usageChart=new Chart($('usageChart'),{type:'bar',data:{datasets:ds},options:chartOpts(fmtB,usRange)})}
+  usageChart=new Chart($('usageChart'),{type:'bar',data:{datasets:ds},options:chartOpts(fmtB,d.start,d.end)})}
 
 function hexRgb(h){h=h.replace('#','');if(h.length===3)h=h.split('').map(c=>c+c).join('');
   return`rgb(${parseInt(h.slice(0,2),16)} ${parseInt(h.slice(2,4),16)} ${parseInt(h.slice(4,6),16)})`}
@@ -504,10 +561,13 @@ function portName(port){
 async function refreshSources(){
   const s=srv();if(!s&&!srcAll)return;
   const port=selectedPort();
-  const qs=`days=${srcDays}`+(srcAll?'':`&server=${sel}`)+(port?`&port=${port}`:'');
+  const w=win(srcDays*86400);
+  const rangeq=customStart!=null?`start=${customStart}&end=${customEnd}`:`days=${srcDays}`;
+  const qs=rangeq+(srcAll?'':`&server=${sel}`)+(port?`&port=${port}`:'');
   let d;try{d=await (await api('/api/sources?'+qs)).json()}catch(e){return}
   const scope=srcAll?'all servers':(port?`${s.name} · ${esc(portName(port))}`:s.name);
-  $('src-note').textContent=`${scope} · ${d.ips_tracked.toLocaleString()} IPs · last ${srcDays}d`;
+  const win_lbl=customStart!=null?`${dfmt(customStart,'date')} → ${dfmt(customEnd,'date')} (by day)`:`last ${srcDays}d`;
+  $('src-note').textContent=`${scope} · ${d.ips_tracked.toLocaleString()} IPs · ${win_lbl}`;
   const cbox=$('country-cards');cbox.innerHTML='';
   if(!d.countries.length){cbox.innerHTML='<div class="sub">No source-IP data yet. Nodes need the updated meter; data appears within ~10s of the next sample.</div>'}
   d.countries.forEach(cn=>{
@@ -633,8 +693,9 @@ $('src-all').addEventListener('change',e=>{srcAll=e.target.checked;refreshSource
 buildSegs();
 loadOverview().then(()=>{refreshCharts();refreshExtras()});
 setInterval(()=>loadOverview(false),10000);
-setInterval(refreshCharts,30000);
-setInterval(refreshExtras,60000);
+// a custom snapshot is static: skip the periodic chart/sources refresh while active
+setInterval(()=>{if(customStart==null)refreshCharts()},30000);
+setInterval(()=>{if(customStart==null)refreshExtras();else refreshHealth()},60000);
 </script>
 </body>
 </html>

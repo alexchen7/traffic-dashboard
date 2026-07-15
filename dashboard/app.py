@@ -802,35 +802,36 @@ GRAN_TABLE = {"10s": ("s10", 10), "1m": ("m1", 60), "1h": ("h1", 3600), "1d": ("
 ENTITY_RE = re.compile(r"^([a-z0-9_]+)(?::port:(\d+))?$")
 
 
-def series_data(entity, gran, rng):
-    """Local rows for the range; if the range reaches past what's stored
-    locally and the archive holds this tier, fetch the missing head from the
-    archive and merge (local rows win on overlap). Archive failures degrade
-    to local-only data instead of failing the chart."""
+def series_data(entity, gran, start, end):
+    """Local rows in the half-open window [start, end); if the window reaches
+    before what's stored locally and the archive holds this tier, fetch the
+    missing head [start, local_min) from the archive and merge (local rows win
+    on overlap). Works for both trailing live windows and fully-historical
+    custom ranges. Archive failures degrade to local-only data."""
     table, bucket = GRAN_TABLE.get(gran, ("m1", 60))
-    now = int(time.time())
-    start = now - rng
+    start, end = int(start), int(end)
     c = db()
-    rows = c.execute(f"SELECT ts, din, dout FROM {table} WHERE entity=? AND ts>=? ORDER BY ts",
-                     (entity, start)).fetchall()
+    rows = c.execute(f"SELECT ts, din, dout FROM {table} WHERE entity=? AND ts>=? AND ts<? ORDER BY ts",
+                     (entity, start, end)).fetchall()
     c.close()
     points = {r[0]: (r[1], r[2]) for r in rows}
     arch_used = False
     if archive_enabled() and table in arch_tables():
-        local_min = rows[0][0] if rows else now
-        # small tolerance so a head gap from an idle node / recent restart
-        # doesn't trigger a pointless archive round-trip
+        # if the window has no local rows at its head, the archive holds it;
+        # local_min defaults to end so a fully-pruned window fetches [start,end)
+        local_min = rows[0][0] if rows else end
         if start < local_min - 2 * bucket:
             try:
                 import urllib.parse
                 rem = arch_req(f"/series?table={table}&entity={urllib.parse.quote(entity)}"
-                               f"&start={start}&end={local_min}", timeout=6)
+                               f"&start={start}&end={min(local_min, end)}", timeout=6)
                 for ts_, di, do_ in rem.get("rows") or []:
-                    points.setdefault(int(ts_), (int(di), int(do_)))
+                    if start <= int(ts_) < end:
+                        points.setdefault(int(ts_), (int(di), int(do_)))
                 arch_used = True
             except Exception as e:
                 print(f"archive fetch failed for {entity}: {e}", file=sys.stderr)
-    return {"entity": entity, "bucket": bucket, "start": start, "end": now,
+    return {"entity": entity, "bucket": bucket, "start": start, "end": end,
             "archive": arch_used,
             "points": [[t, v[0], v[1]] for t, v in sorted(points.items())]}
 
@@ -1097,11 +1098,22 @@ class Handler(BaseHTTPRequestHandler):
         if not m or m.group(1) not in SERVERS:
             return {"error": "bad entity"}
         gran = q.get("gran", "1m")
-        try:
-            rng = min(int(q.get("range", 3600)), (RETENTION_MAX_DAYS + 10) * 86400)
-        except ValueError:
-            rng = 3600
-        return series_data(entity, gran, rng)
+        now = int(time.time())
+        maxspan = (RETENTION_MAX_DAYS + 10) * 86400
+        # absolute window (custom range) takes precedence over relative range
+        if str(q.get("start", "")).lstrip("-").isdigit() and str(q.get("end", "")).lstrip("-").isdigit():
+            start, end = int(q["start"]), int(q["end"])
+            if end <= start:
+                return {"error": "end must be after start"}
+            end = min(end, now)
+            start = max(start, end - maxspan)
+        else:
+            try:
+                rng = min(int(q.get("range", 3600)), maxspan)
+            except ValueError:
+                rng = 3600
+            end, start = now, now - rng
+        return series_data(entity, gran, start, end)
 
     def sources(self, q):
         """Per-source-IP traffic + per-country aggregation. Optionally filtered
@@ -1109,24 +1121,33 @@ class Handler(BaseHTTPRequestHandler):
         sid = q.get("server", "")
         if sid and sid not in SERVERS:
             return {"error": "unknown server"}
-        try:
-            days = max(1, min(int(q.get("days", 7)), 365))
-        except ValueError:
-            days = 7
+        now = int(time.time())
+        # ips are daily buckets, so a custom [start,end] is honored at day
+        # resolution: include every day bucket that overlaps the window.
+        custom = str(q.get("start", "")).lstrip("-").isdigit() and str(q.get("end", "")).lstrip("-").isdigit()
+        if custom:
+            since = int(q["start"]) - (int(q["start"]) % 86400)   # floor to day
+            until = min(int(q["end"]), now)
+            days = max(1, round((until - since) / 86400))
+        else:
+            try:
+                days = max(1, min(int(q.get("days", 7)), 365))
+            except ValueError:
+                days = 7
+            since, until = now - days * 86400, now + 1
         port = None
         if sid and str(q.get("port", "")).isdigit():
             port = int(q["port"])
-        since = int(time.time()) - days * 86400
         c = db()
         if sid and port is not None:
-            rows = c.execute("SELECT ip, SUM(din), SUM(dout) FROM ips WHERE sid=? AND port=? AND day>=? GROUP BY ip",
-                             (sid, port, since)).fetchall()
+            rows = c.execute("SELECT ip, SUM(din), SUM(dout) FROM ips WHERE sid=? AND port=? AND day>=? AND day<=? GROUP BY ip",
+                             (sid, port, since, until)).fetchall()
         elif sid:
-            rows = c.execute("SELECT ip, SUM(din), SUM(dout) FROM ips WHERE sid=? AND day>=? GROUP BY ip",
-                             (sid, since)).fetchall()
+            rows = c.execute("SELECT ip, SUM(din), SUM(dout) FROM ips WHERE sid=? AND day>=? AND day<=? GROUP BY ip",
+                             (sid, since, until)).fetchall()
         else:
-            rows = c.execute("SELECT ip, SUM(din), SUM(dout) FROM ips WHERE day>=? GROUP BY ip",
-                             (since,)).fetchall()
+            rows = c.execute("SELECT ip, SUM(din), SUM(dout) FROM ips WHERE day>=? AND day<=? GROUP BY ip",
+                             (since, until)).fetchall()
         c.close()
         rows.sort(key=lambda r: r[1] + r[2], reverse=True)
         total_all = sum(r[1] + r[2] for r in rows)
@@ -1153,6 +1174,7 @@ class Handler(BaseHTTPRequestHandler):
             clist.append(cn)
         clist.sort(key=lambda x: -x["total"])
         return {"days": days, "server": sid or "all", "port": port, "total": total_all,
+                "custom": bool(custom), "start": since, "end": until,
                 "ips_tracked": len(rows), "top": top, "other": other,
                 "countries": clist[:30]}
 
