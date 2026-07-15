@@ -112,6 +112,38 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
 .toast.show{opacity:1}
 .addport{display:flex;gap:8px;align-items:center}
 .addport input{width:110px}
+/* ---------- mobile ---------- */
+@media(max-width:640px){
+  body{padding:12px 12px 32px}
+  h1{font-size:1.08rem}
+  .top{gap:8px}
+  .panel{padding:14px 12px}
+  .head{gap:8px}
+  .head h2{font-size:.9rem}
+  .chartbox{height:230px}.chartbox.short{height:200px}
+  .servers{grid-template-columns:1fr;gap:10px}
+  .cgrid{grid-template-columns:1fr 1fr}
+  .addport{width:100%}.addport input{flex:1;width:auto}
+  .crbar input[type=datetime-local]{flex:1;min-width:0}
+  /* wide data tables -> stacked cards with inline labels */
+  .rtable thead{display:none}
+  .rtable,.rtable tbody,.rtable tr,.rtable td{display:block;width:100%}
+  .rtable tr{border:1px solid var(--border);border-radius:11px;margin-bottom:10px;padding:8px 12px;background:var(--panel2)}
+  .rtable tr:hover td{background:transparent}
+  .rtable td{border:none;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:5px 0;text-align:right}
+  .rtable td::before{content:attr(data-label);color:var(--muted);font-size:.7rem;text-transform:uppercase;letter-spacing:.4px;text-align:left;flex:0 0 auto;font-weight:600}
+  .rtable td[data-label=""]::before{content:""}
+  .rtable td.rt-hide{display:none}
+  .rtable .name-in{width:auto;flex:1;text-align:right;font-size:.95rem}
+  .rtable .pctbar{width:70px}
+  .rtable .iprank{width:auto;color:var(--accent);font-weight:700}
+  /* health rows stack */
+  .hrow{gap:6px 10px;padding:12px 4px}
+  .hname{width:auto;flex:1 1 60%}
+  .hpct{width:auto;flex:0 0 auto;margin-left:auto}
+  .hstrip{flex-basis:100%;min-width:0;order:3;height:20px}
+  .hmeta{width:100%;text-align:left;order:4}
+}
 /* traffic sources */
 .cgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(195px,1fr));gap:10px}
 .ccard{background:var(--panel2);border:1px solid var(--border);border-radius:11px;padding:12px 14px;transition:.15s}
@@ -214,7 +246,7 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
       <button onclick="addPort()">+ Monitor port</button>
     </div>
   </div>
-  <table>
+  <table class="rtable">
     <thead><tr><th>Name</th><th>Port</th><th>Upload &#8593;</th><th>Download &#8595;</th><th>Total</th><th>Share</th><th>Live</th><th></th></tr></thead>
     <tbody id="port-rows"></tbody>
   </table>
@@ -229,7 +261,7 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
     <div class="seg" id="src-range"></div>
   </div>
   <div class="cgrid" id="country-cards"></div>
-  <table style="margin-top:14px">
+  <table class="rtable" style="margin-top:14px">
     <thead><tr><th></th><th>Source IP</th><th>Location</th><th>Share</th><th>Upload &#8593;</th><th>Download &#8595;</th><th>Total</th></tr></thead>
     <tbody id="ip-rows"></tbody>
   </table>
@@ -506,12 +538,12 @@ function renderPorts(){
   [...s.ports].sort((a,b)=>b.total-a.total).forEach(p=>{
     const r=OV.rates[`${s.id}:port:${p.port}`];
     const tr=document.createElement('tr');
-    tr.innerHTML=`<td><input class="name-in" value="${esc(p.name)}" data-port="${p.port}"></td>
-      <td class="mono">${p.port}</td><td class="mono up">${fmtB(p.in)}</td><td class="mono down">${fmtB(p.out)}</td>
-      <td class="mono"><b>${fmtB(p.total)}</b></td>
-      <td><span class="pctbar"><i style="width:${p.pct}%"></i></span><span class="mono" style="color:var(--muted);font-size:.76rem">${p.pct}%</span></td>
-      <td class="mono" style="font-size:.76rem;color:var(--muted)">${r&&(r.in||r.out)?'↓'+fmtRate(r.out)+' ↑'+fmtRate(r.in):'idle'}</td>
-      <td><button class="xbtn" title="Stop monitoring this port" onclick="removePort(${p.port})">✕</button></td>`;
+    tr.innerHTML=`<td data-label="Name"><input class="name-in" value="${esc(p.name)}" data-port="${p.port}"></td>
+      <td class="mono" data-label="Port">${p.port}</td><td class="mono up" data-label="Upload ↑">${fmtB(p.in)}</td><td class="mono down" data-label="Download ↓">${fmtB(p.out)}</td>
+      <td class="mono" data-label="Total"><b>${fmtB(p.total)}</b></td>
+      <td data-label="Share"><span class="pctbar"><i style="width:${p.pct}%"></i></span><span class="mono" style="color:var(--muted);font-size:.76rem">${p.pct}%</span></td>
+      <td class="mono" data-label="Live" style="font-size:.76rem;color:var(--muted)">${r&&(r.in||r.out)?'↓'+fmtRate(r.out)+' ↑'+fmtRate(r.in):'idle'}</td>
+      <td data-label=""><button class="xbtn" title="Stop monitoring this port" onclick="removePort(${p.port})">✕</button></td>`;
     tb.appendChild(tr)});
   tb.querySelectorAll('.name-in').forEach(inp=>{
     inp.addEventListener('change',async()=>{
@@ -581,16 +613,16 @@ async function refreshSources(){
   const tb=$('ip-rows');tb.innerHTML='';
   d.top.forEach((p,i)=>{
     const tr=document.createElement('tr');
-    tr.innerHTML=`<td class="iprank">${i+1}</td>
-      <td class="mono">${esc(p.ip)}</td>
-      <td>${flagImg(p.cc,p.country)} <span style="font-size:.8rem">${esc(p.country||'—')}</span></td>
-      <td><span class="pctbar"><i style="width:${Math.min(100,p.share)}%"></i></span><span class="mono" style="color:var(--muted);font-size:.76rem">${p.share}%</span></td>
-      <td class="mono up">${fmtB(p.out)}</td><td class="mono down">${fmtB(p.in)}</td>
-      <td class="mono"><b>${fmtB(p.total)}</b></td>`;
+    tr.innerHTML=`<td class="iprank" data-label="#">${i+1}</td>
+      <td class="mono" data-label="Source IP">${esc(p.ip)}</td>
+      <td data-label="Location">${flagImg(p.cc,p.country)} <span style="font-size:.8rem">${esc(p.country||'—')}</span></td>
+      <td data-label="Share"><span class="pctbar"><i style="width:${Math.min(100,p.share)}%"></i></span><span class="mono" style="color:var(--muted);font-size:.76rem">${p.share}%</span></td>
+      <td class="mono up" data-label="Upload ↑">${fmtB(p.out)}</td><td class="mono down" data-label="Download ↓">${fmtB(p.in)}</td>
+      <td class="mono" data-label="Total"><b>${fmtB(p.total)}</b></td>`;
     tb.appendChild(tr)});
   if(d.other>0){const tr=document.createElement('tr');
-    tr.innerHTML=`<td></td><td class="sub" colspan="3">other IPs beyond top 50</td>
-      <td></td><td></td><td class="mono">${fmtB(d.other)}</td>`;tb.appendChild(tr)}}
+    tr.innerHTML=`<td class="rt-hide"></td><td class="sub" data-label="" colspan="3">other IPs beyond top 50</td>
+      <td class="rt-hide"></td><td class="rt-hide"></td><td class="mono" data-label="Total">${fmtB(d.other)}</td>`;tb.appendChild(tr)}}
 
 /* ---------- node health ---------- */
 async function refreshHealth(){
