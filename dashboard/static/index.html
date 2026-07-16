@@ -397,8 +397,6 @@ function dfmt(ts,kind){ // kind: 'time' | 'date' | 'full'
 function tickClock(){const off=dispOff();
   $('clock').textContent=dfmt(Date.now()/1000,'full')+(off==null?'':' '+(dtz==='server'?'srv '+offLabel(off):offLabel(off)))}
 
-function flagEmoji(cc){if(!cc||cc.length!==2)return'';
-  return String.fromCodePoint(...[...cc.toUpperCase()].map(c=>0x1F1E6+c.charCodeAt(0)-65))}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function fmtB(b){if(b==null)return'–';const u=['B','KB','MB','GB','TB'];let i=0;while(b>=1024&&i<4){b/=1024;i++}return b.toFixed(b>=100||i==0?0:b>=10?1:2)+' '+u[i]}
 function fmtRate(bps){const bits=bps*8;const u=['bps','Kbps','Mbps','Gbps'];let i=0,v=bits;while(v>=1000&&i<3){v/=1000;i++}return v.toFixed(v>=100?0:v>=10?1:2)+' '+u[i]}
@@ -643,7 +641,7 @@ async function refreshSources(){
     el.innerHTML=`<div class="cc-top">${flagImg(cn.cc,cn.country)}<span>${esc(cn.country)}</span></div>
       <div class="cc-tot">${fmtB(cn.total)}<span class="cc-share">${cn.share}%</span></div>
       <div class="bar"><i style="width:${Math.min(100,cn.share)}%"></i></div>
-      <div class="cc-io"><span class="down">↓ ${fmtB(cn.in)}</span><span class="up">↑ ${fmtB(cn.out)}</span></div>
+      <div class="cc-io"><span class="up">↑ ${fmtB(cn.in)}</span><span class="down">↓ ${fmtB(cn.out)}</span></div>
       <div class="cc-ips">${cn.ips.toLocaleString()} source IP${cn.ips===1?'':'s'}</div>`;
     cbox.appendChild(el)});
   const tb=$('ip-rows');tb.innerHTML='';
@@ -653,7 +651,7 @@ async function refreshSources(){
       <td class="mono" data-label="Source IP">${esc(p.ip)}</td>
       <td data-label="Location">${flagImg(p.cc,p.country)} <span style="font-size:.8rem">${esc(p.country||'—')}</span></td>
       <td data-label="Share"><span class="pctbar"><i style="width:${Math.min(100,p.share)}%"></i></span><span class="mono" style="color:var(--muted);font-size:.76rem">${p.share}%</span></td>
-      <td class="mono up" data-label="Upload ↑">${fmtB(p.out)}</td><td class="mono down" data-label="Download ↓">${fmtB(p.in)}</td>
+      <td class="mono up" data-label="Upload ↑">${fmtB(p.in)}</td><td class="mono down" data-label="Download ↓">${fmtB(p.out)}</td>
       <td class="mono" data-label="Total"><b>${fmtB(p.total)}</b></td>`;
     tb.appendChild(tr)});
   if(d.other>0){const tr=document.createElement('tr');

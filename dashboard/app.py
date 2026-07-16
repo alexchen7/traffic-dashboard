@@ -19,7 +19,7 @@
   may delete them; chart requests older than local retention fetch the
   missing range back from the archive and merge it in transparently.
 """
-import calendar, concurrent.futures, hashlib, hmac, http.cookies, json, os, re, secrets
+import calendar, concurrent.futures, copy, hashlib, hmac, http.cookies, json, os, re, secrets
 import socketserver, sqlite3, subprocess, sys, threading, time
 from http.server import BaseHTTPRequestHandler
 
@@ -103,7 +103,7 @@ def get_settings():
     if "servers" not in s:
         s = {"servers": {}}
     for sid, srv in SERVERS.items():
-        cur = dict(DEFAULT_SRV)
+        cur = copy.deepcopy(DEFAULT_SRV)   # deep copy: never alias the shared default's mutable dict/lists
         if srv.get("kind") == "relay":
             cur["quota_gb"] = 500
         elif srv.get("kind") == "client":
@@ -198,10 +198,70 @@ def record_health(c, sid, ts, ok):
               (sid, ts - ts % 60, 1 if ok else 0))
 
 
+def _port_list(vals):
+    """Coerce an arbitrary list to a de-duplicated sorted list of valid port
+    ints. This is the single choke point that keeps non-numeric junk out of
+    the meter command line (defense in depth against a tampered import)."""
+    out = set()
+    for p in vals or []:
+        try:
+            n = int(p)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= n <= 65535:
+            out.add(n)
+    return sorted(out)
+
+
+def sanitize_srv_settings(raw):
+    """Validate one server's settings from an untrusted source (import file)
+    exactly like /api/settings does — only well-typed, bounded values survive."""
+    out = {}
+    if not isinstance(raw, dict):
+        return out
+    if "display_name" in raw:
+        dn = str(raw["display_name"]).strip()[:48]
+        if dn:
+            out["display_name"] = dn
+    if "reset_day" in raw:
+        try:
+            rd = int(raw["reset_day"])
+            if 1 <= rd <= 28:
+                out["reset_day"] = rd
+        except (TypeError, ValueError):
+            pass
+    if "quota_gb" in raw:
+        try:
+            qg = float(raw["quota_gb"])
+            if qg >= 0:
+                out["quota_gb"] = qg
+        except (TypeError, ValueError):
+            pass
+    if "tz_offset" in raw:
+        try:
+            tz = float(raw["tz_offset"])
+            if -12 <= tz <= 14:
+                out["tz_offset"] = tz
+        except (TypeError, ValueError):
+            pass
+    if isinstance(raw.get("port_names"), dict):
+        out["port_names"] = {str(k): str(v)[:40] for k, v in raw["port_names"].items()
+                             if re.fullmatch(r"\d+", str(k))}
+    for key in ("ports_include", "ports_exclude"):
+        if isinstance(raw.get(key), list):
+            out[key] = _port_list(raw[key])
+    return out
+
+
 def meter_cmd(srv, st):
-    inc = ",".join(str(p) for p in st.get("ports_include", []))
-    exc = ",".join(str(p) for p in st.get("ports_exclude", []))
-    cmd = f"python3 /opt/traffic-meter/meter.py report --source {srv.get('source','none')}"
+    # ports coerced to ints here so nothing but digits can reach the shell /
+    # ssh command line, even if a bad value slipped into stored settings
+    inc = ",".join(str(p) for p in _port_list(st.get("ports_include", [])))
+    exc = ",".join(str(p) for p in _port_list(st.get("ports_exclude", [])))
+    src = srv.get("source", "none")
+    if src not in ("nft", "xui", "none"):
+        src = "none"
+    cmd = f"python3 /opt/traffic-meter/meter.py report --source {src}"
     if inc: cmd += f" --include {inc}"
     if exc: cmd += f" --exclude {exc}"
     return cmd
@@ -672,8 +732,11 @@ def import_payload(d):
         cur = get_settings()
         for sid, st in (imp_set.get("servers") or {}).items():
             if isinstance(st, dict) and re.fullmatch(r"[a-z0-9_]+", str(sid)):
-                merged = cur["servers"].get(sid, dict(DEFAULT_SRV))
-                merged.update(st)
+                # NEVER merge the imported settings blob verbatim — a tampered
+                # export could inject ports_include like ["1; rm -rf /"] that
+                # would flow through meter_cmd into a shell / ssh command line.
+                merged = cur["servers"].get(sid) or copy.deepcopy(DEFAULT_SRV)
+                merged.update(sanitize_srv_settings(st))
                 cur["servers"][sid] = merged
         imp_order = [x for x in (imp_set.get("order") or []) if x in SERVERS]
         cur["order"] = imp_order + [x for x in cur["order"] if x not in imp_order]
