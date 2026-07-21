@@ -111,6 +111,7 @@ tr:hover td{background:var(--panel2)}
 .modal .row{display:flex;gap:10px;justify-content:flex-end;margin-top:18px}
 .modal .hint{font-size:.72rem;color:var(--muted);margin-top:4px}
 hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
+.ret-warn{font-size:.74rem;color:var(--warn);border:1px solid var(--warn);border-radius:8px;padding:8px 10px;margin-top:8px;background:color-mix(in srgb,var(--warn) 12%,transparent)}
 .toast{position:fixed;bottom:24px;right:24px;background:var(--chip-on-bg);border:1px solid var(--accent);color:var(--chip-on-tx);
   padding:10px 18px;border-radius:10px;font-size:.85rem;opacity:0;transition:.3s;pointer-events:none;z-index:60}
 .toast.show{opacity:1}
@@ -333,6 +334,7 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
     <input type="number" id="ret-health" min="0" max="3650">
     <div class="hint">Applies within ~5 minutes. Lowering a value permanently deletes older rows.
       Rough cost: 1-min data ≈ 43 MB per port/host per year; 1-hour ≈ 0.7 MB; daily ≈ 0.03 MB.</div>
+    <div class="ret-warn" id="ret-warn" style="display:none"></div>
     <div class="row"><button class="primary" onclick="saveRetention()">Save retention</button></div>
     <hr class="sep">
     <h3>Backup &amp; migration</h3>
@@ -724,8 +726,22 @@ function openSettings(){
   const ret=OV.retention||{m1:8,h1:120,d1:0,ips:60,health:120};
   $('ret-m1').value=ret.m1;$('ret-h1').value=ret.h1;$('ret-d1').value=ret.d1;
   $('ret-ips').value=ret.ips;$('ret-health').value=ret.health;
+  updateRetWarn();
   $('settings-ov').classList.add('show')}
 function closeSettings(){$('settings-ov').classList.remove('show')}
+
+/* warn when a finite retention is set on a rollup tier the linked archive isn't shipping */
+const TIERLBL={m1:'1-minute',h1:'1-hour',d1:'daily'};
+function retWarnTiers(){
+  const a=OV&&OV.archive;if(!a||!a.enabled)return [];
+  const v={m1:+$('ret-m1').value,h1:+$('ret-h1').value,d1:+$('ret-d1').value};
+  return ['m1','h1','d1'].filter(t=>v[t]>0 && !(a.ship||[]).includes(t))}
+function updateRetWarn(){
+  const t=retWarnTiers(),el=$('ret-warn');
+  if(!t.length){el.style.display='none';el.textContent='';return}
+  el.style.display='block';
+  el.textContent='⚠ Archive is linked but not shipping '+t.map(x=>TIERLBL[x]).join(', ')+
+    ' data — with a finite retention set, those rows are pruned locally WITHOUT being archived (permanent loss). Add these tiers to the archive ship list, or set their retention to 0 (forever).'}
 
 async function saveSettings(){
   await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -746,6 +762,7 @@ async function saveRetention(){
               ips:+$('ret-ips').value,health:+$('ret-health').value};
   for(const[k,v]of Object.entries(vals))
     if(!Number.isInteger(v)||v<0||v>3650){toast(`${k}: enter 0–3650 days`);return}
+  if(retWarnTiers().length && !confirm('Archive is linked but won’t receive '+retWarnTiers().map(x=>TIERLBL[x]).join(', ')+' data before it’s pruned (permanent loss). Save anyway?'))return;
   const r=await api('/api/retention',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(vals)});
   const j=await r.json();
@@ -774,6 +791,7 @@ setInterval(tickClock,1000);tickClock();
 $('bw-gran').addEventListener('change',e=>{bwGran=e.target.value;refreshSpeed()});
 $('us-gran').addEventListener('change',e=>{usGran=e.target.value;refreshUsage()});
 $('src-all').addEventListener('change',e=>{srcAll=e.target.checked;refreshSources()});
+['ret-m1','ret-h1','ret-d1'].forEach(id=>$(id).addEventListener('input',updateRetWarn));
 applyView();
 buildSegs();
 loadOverview().then(()=>{refreshCharts();refreshExtras()});

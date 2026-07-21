@@ -1153,7 +1153,9 @@ class Handler(BaseHTTPRequestHandler):
             })
         c.close()
         return {"servers": servers_out, "rates": rates, "now": int(now),
-                "retention": s["retention"]}
+                "retention": s["retention"],
+                "archive": {"enabled": archive_enabled(),
+                            "ship": arch_tables() if archive_enabled() else []}}
 
     def series(self, q):
         entity = q.get("entity", "")
