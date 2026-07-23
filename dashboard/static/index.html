@@ -83,8 +83,14 @@ select:focus,input:focus{outline:none;border-color:var(--accent)}
 .seg{display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden}
 .seg button{border:none;border-radius:0;padding:6px 12px;background:transparent;font-size:.78rem;color:var(--muted)}
 .seg button.on{background:var(--accent);color:var(--logo-tx);font-weight:600}
-.chartbox{position:relative;height:320px}
+.chartbox{position:relative;height:320px;user-select:none}
 .chartbox.short{height:240px}
+.zoomsel{position:absolute;background:color-mix(in srgb,var(--accent) 18%,transparent);border:1px solid var(--accent);pointer-events:none;z-index:5}
+.chip.multi{background:var(--chip-on-bg);border-color:var(--accent2);color:var(--chip-on-tx);font-weight:600}
+.pcdot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:middle}
+.chip .pcdot{opacity:.5}
+.chip.on .pcdot{opacity:1}
+#bw-hint{font-size:.72rem;color:var(--muted);margin-left:4px}
 table{width:100%;border-collapse:collapse;font-size:.85rem}
 th{color:var(--muted);font-weight:600;text-align:left;padding:8px 10px;font-size:.72rem;text-transform:uppercase;letter-spacing:.6px;border-bottom:1px solid var(--border)}
 th.sortable{cursor:pointer;user-select:none;white-space:nowrap}
@@ -220,6 +226,7 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
   <div class="head">
     <h2>Bandwidth</h2>
     <div class="chips" id="entity-chips"></div>
+    <span id="bw-hint"></span>
     <div class="spacer"></div>
     <div class="seg" id="bw-range"></div>
     <select id="bw-gran">
@@ -360,6 +367,9 @@ let srcDays=7, srcAll=false, hlDays=1;
 let customStart=null, customEnd=null;   // epochs when a custom snapshot is active
 let portSort={key:'total',dir:-1};      // ports table sort (dir: 1 asc, -1 desc)
 let portsPaused=false;                    // freeze ports-table auto-refresh
+let bwMulti=false;                        // bandwidth per-user (multi-line) mode
+const bwSel=new Set();                    // selected ports in multi mode (empty = all)
+function portColor(port){const h=(port*47)%360;return `hsl(${h} 70% 55%)`}
 const RANGES=[['1h',3600],['6h',21600],['24h',86400],['7d',604800],['30d',2592000]];
 const DAYRANGES=[['24h',1],['7d',7],['30d',30],['90d',90]];
 
@@ -463,7 +473,7 @@ function buildServerCards(){
     d.addEventListener('dragover',e=>{if(dragId&&dragId!==s.id){e.preventDefault();d.classList.add('drag-over')}});
     d.addEventListener('dragleave',()=>d.classList.remove('drag-over'));
     d.addEventListener('drop',e=>{e.preventDefault();d.classList.remove('drag-over');dropOnServer(s.id)});
-    d.onclick=()=>{sel=s.id;entity=s.id;buildServerCards();buildChips();refreshCharts();renderPorts();updateTz();refreshSources()};
+    d.onclick=()=>{sel=s.id;entity=s.id;bwMulti=false;bwSel.clear();buildServerCards();buildChips();refreshCharts();renderPorts();updateTz();refreshSources()};
     const cc=(s.country_code||'').toLowerCase();
     const flagHtml=cc?`<img class="flag-img" src="https://flagcdn.com/32x24/${cc}.png" srcset="https://flagcdn.com/64x48/${cc}.png 2x" alt="${esc(s.country_code)}" title="${esc(s.country)} (${esc(s.geo_ip)})" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'flag-cc',textContent:this.alt}))">`:'';
     d.innerHTML=`<div class="row1"><span class="grip" title="Drag to reorder">&#x2630;</span>${flagHtml}<span class="nm">${esc(s.name)}</span>
@@ -491,15 +501,36 @@ async function saveOrder(ids){
 
 function buildChips(){
   const box=$('entity-chips');box.innerHTML='';const s=srv();if(!s)return;
-  const items=[[s.id,'Total'],...s.ports.map(p=>[`${s.id}:port:${p.port}`,p.name])];
-  items.forEach(([id,lbl])=>{const c=document.createElement('span');c.className='chip'+(id===entity?' on':'');
-    c.textContent=lbl;c.title=id;c.onclick=()=>{entity=id;buildChips();refreshCharts();refreshSources()};box.appendChild(c)})}
+  // Total chip: click again while on Total -> split into per-user curves; click in multi -> back to Total
+  const tot=document.createElement('span');
+  tot.className='chip'+(bwMulti?' multi':(entity===s.id?' on':''));
+  tot.textContent=bwMulti?'◧ Per-user':'Total';
+  tot.title=bwMulti?'Back to Total':'Click again to split bandwidth into one curve per user';
+  tot.onclick=()=>{
+    if(bwMulti){bwMulti=false;entity=s.id;}
+    else if(entity===s.id){bwMulti=true;bwSel.clear();}
+    else{entity=s.id;}
+    buildChips();refreshCharts();refreshSources()};
+  box.appendChild(tot);
+  // per-port chips
+  s.ports.forEach(p=>{
+    const id=`${s.id}:port:${p.port}`;
+    const on=bwMulti?bwSel.has(p.port):(id===entity);
+    const c=document.createElement('span');c.className='chip'+(on?' on':'');
+    if(bwMulti){const dot=document.createElement('i');dot.className='pcdot';dot.style.background=portColor(p.port);c.appendChild(dot);}
+    c.appendChild(document.createTextNode(p.name));c.title=id;
+    c.onclick=()=>{
+      if(bwMulti){bwSel.has(p.port)?bwSel.delete(p.port):bwSel.add(p.port);buildChips();refreshSpeed();}
+      else{entity=id;buildChips();refreshCharts();refreshSources();}};
+    box.appendChild(c)});
+  $('bw-hint').textContent=bwMulti?(bwSel.size?`${bwSel.size} selected`:'showing all — click users to filter'):'';}
 
 function chartOpts(fmt,xmin,xmax){const span=xmax-xmin;return{responsive:true,maintainAspectRatio:false,animation:false,
   interaction:{mode:'index',intersect:false},
   plugins:{legend:{labels:{color:cssv('--muted'),boxWidth:12,font:{size:11}}},
     tooltip:{backgroundColor:cssv('--panel2'),borderColor:cssv('--border'),borderWidth:1,
       titleColor:cssv('--text'),bodyColor:cssv('--text'),
+      itemSort:(a,b)=>b.parsed.y-a.parsed.y,
       callbacks:{title:items=>dfmt(items[0].parsed.x,'full'),
                  label:c=>c.dataset.label+': '+fmt(c.parsed.y)}}},
   scales:{x:{type:'linear',min:xmin,max:xmax,
@@ -515,6 +546,7 @@ function win(rangeSec){
 function seriesQ(w){return w.custom?`start=${w.start}&end=${w.end}`:`range=${w.span}`}
 
 async function refreshSpeed(){
+  if(bwMulti)return refreshSpeedMulti();
   if(!entity)return;
   const w=win(bwRange);
   const g=bwGran==='auto'?autoBw(w.span):bwGran;
@@ -524,7 +556,51 @@ async function refreshSpeed(){
   const cIn=cssv('--accent'),cOut=cssv('--accent2');
   const ds=[Object.assign(mk(1,hexRgb(cIn)),{label:'Inbound'}),Object.assign(mk(2,hexRgb(cOut)),{label:'Outbound'})];
   if(speedChart)speedChart.destroy();
-  speedChart=new Chart($('speedChart'),{type:'line',data:{datasets:ds},options:chartOpts(fmtRate,d.start,d.end)})}
+  speedChart=new Chart($('speedChart'),{type:'line',data:{datasets:ds},options:chartOpts(fmtRate,d.start,d.end)});
+  attachZoom(speedChart)}
+
+// per-user mode: one line per port = combined (in+out) bandwidth, distinct colours
+async function refreshSpeedMulti(){
+  const s=srv();if(!s)return;
+  const w=win(bwRange);
+  const g=bwGran==='auto'?autoBw(w.span):bwGran;
+  const d=await (await api(`/api/series_multi?server=${sel}&gran=${g}&${seriesQ(w)}`)).json();
+  const showAll=bwSel.size===0;
+  const ds=(s.ports||[]).filter(p=>showAll||bwSel.has(p.port)).map(p=>{
+    const col=portColor(p.port);
+    const pts=(d.series[p.port]||[]).map(r=>({x:r[0],y:(r[1]+r[2])/d.bucket}));
+    return {label:p.name,data:pts,borderColor:col,backgroundColor:col,fill:false,pointRadius:0,borderWidth:1.4,tension:.2};
+  });
+  if(speedChart)speedChart.destroy();
+  const o=chartOpts(fmtRate,d.start,d.end);o.plugins.legend.display=false;
+  speedChart=new Chart($('speedChart'),{type:'line',data:{datasets:ds},options:o});
+  attachZoom(speedChart)}
+
+// drag-select to zoom: sets the shared custom window (bandwidth + data-used sync); dbl-click resets
+function attachZoom(chart){
+  const cv=chart.canvas;cv.style.cursor='crosshair';
+  let sel=null,x0=0;
+  const clamp=(x,a)=>Math.max(a.left,Math.min(a.right,x));
+  function move(e){if(!sel)return;const a=chart.chartArea,r=cv.getBoundingClientRect();
+    const x=clamp(e.clientX-r.left,a);sel.style.left=Math.min(x,x0)+'px';sel.style.width=Math.abs(x-x0)+'px'}
+  function up(e){window.removeEventListener('mousemove',move);window.removeEventListener('mouseup',up);
+    if(!sel)return;const a=chart.chartArea,r=cv.getBoundingClientRect();
+    const x=clamp(e.clientX-r.left,a),xa=Math.min(x,x0),xb=Math.max(x,x0);sel.remove();sel=null;
+    if(xb-xa<8)return;
+    const t0=Math.round(chart.scales.x.getValueForPixel(xa)),t1=Math.round(chart.scales.x.getValueForPixel(xb));
+    if(t1-t0<5)return;
+    customStart=t0;customEnd=t1;
+    $('cr-active').textContent='zoom '+dfmt(t0,'full')+' → '+dfmt(t1,'full');
+    $('cr-toggle').style.borderColor='var(--accent2)';
+    buildSegs();refreshCharts();refreshSources()}
+  cv.onmousedown=e=>{if(e.button!==0)return;const a=chart.chartArea,r=cv.getBoundingClientRect();
+    const x=e.clientX-r.left,y=e.clientY-r.top;
+    if(x<a.left||x>a.right||y<a.top||y>a.bottom)return;
+    x0=clamp(x,a);sel=document.createElement('div');sel.className='zoomsel';
+    sel.style.left=x0+'px';sel.style.top=a.top+'px';sel.style.height=(a.bottom-a.top)+'px';sel.style.width='0px';
+    cv.parentNode.appendChild(sel);
+    window.addEventListener('mousemove',move);window.addEventListener('mouseup',up);e.preventDefault()};
+  cv.ondblclick=()=>{if(customStart!=null){exitCustom();buildSegs();refreshCharts();refreshSources()}}}
 
 async function refreshUsage(){
   if(!entity)return;
@@ -538,7 +614,8 @@ async function refreshUsage(){
   const ds=[{label:'In',data:d.points.map(p=>({x:p[0],y:p[1]})),backgroundColor:cIn.replace(')',' / .75)'),stack:'s'},
             {label:'Out',data:d.points.map(p=>({x:p[0],y:p[2]})),backgroundColor:cOut.replace(')',' / .75)'),stack:'s'}];
   if(usageChart)usageChart.destroy();
-  usageChart=new Chart($('usageChart'),{type:'bar',data:{datasets:ds},options:chartOpts(fmtB,d.start,d.end)})}
+  usageChart=new Chart($('usageChart'),{type:'bar',data:{datasets:ds},options:chartOpts(fmtB,d.start,d.end)});
+  attachZoom(usageChart)}
 
 function hexRgb(h){h=h.replace('#','');if(h.length===3)h=h.split('').map(c=>c+c).join('');
   return`rgb(${parseInt(h.slice(0,2),16)} ${parseInt(h.slice(2,4),16)} ${parseInt(h.slice(4,6),16)})`}

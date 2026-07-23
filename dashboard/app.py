@@ -865,6 +865,26 @@ GRAN_TABLE = {"10s": ("s10", 10), "1m": ("m1", 60), "1h": ("h1", 3600), "1d": ("
 ENTITY_RE = re.compile(r"^([a-z0-9_]+)(?::port:(\d+))?$")
 
 
+def window_from_q(q):
+    """Resolve the [start,end] window for a chart query. Absolute start/end
+    (custom zoom) wins over a relative range=. Returns (start,end) or None."""
+    now = int(time.time())
+    maxspan = (RETENTION_MAX_DAYS + 10) * 86400
+    if str(q.get("start", "")).lstrip("-").isdigit() and str(q.get("end", "")).lstrip("-").isdigit():
+        start, end = int(q["start"]), int(q["end"])
+        if end <= start:
+            return None
+        end = min(end, now)
+        start = max(start, end - maxspan)
+    else:
+        try:
+            rng = min(int(q.get("range", 3600)), maxspan)
+        except ValueError:
+            rng = 3600
+        end, start = now, now - rng
+    return start, end
+
+
 def series_data(entity, gran, start, end):
     """Local rows in the half-open window [start, end); if the window reaches
     before what's stored locally and the archive holds this tier, fetch the
@@ -961,6 +981,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/series":
             self._send(200, self.series(q))
+            return
+        if path == "/api/series_multi":
+            self._send(200, self.series_multi(q))
             return
         if path == "/api/sources":
             self._send(200, self.sources(q))
@@ -1162,23 +1185,36 @@ class Handler(BaseHTTPRequestHandler):
         m = ENTITY_RE.match(entity)
         if not m or m.group(1) not in SERVERS:
             return {"error": "bad entity"}
+        w = window_from_q(q)
+        if not w:
+            return {"error": "end must be after start"}
+        return series_data(entity, q.get("gran", "1m"), w[0], w[1])
+
+    def series_multi(self, q):
+        """Per-port series for one server in a single response, for the
+        per-user (multi-line) bandwidth view. {series: {port: [[ts,in,out],...]}}."""
+        sid = q.get("server", "")
+        if sid not in SERVERS:
+            return {"error": "unknown server"}
         gran = q.get("gran", "1m")
-        now = int(time.time())
-        maxspan = (RETENTION_MAX_DAYS + 10) * 86400
-        # absolute window (custom range) takes precedence over relative range
-        if str(q.get("start", "")).lstrip("-").isdigit() and str(q.get("end", "")).lstrip("-").isdigit():
-            start, end = int(q["start"]), int(q["end"])
-            if end <= start:
-                return {"error": "end must be after start"}
-            end = min(end, now)
-            start = max(start, end - maxspan)
-        else:
-            try:
-                rng = min(int(q.get("range", 3600)), maxspan)
-            except ValueError:
-                rng = 3600
-            end, start = now, now - rng
-        return series_data(entity, gran, start, end)
+        w = window_from_q(q)
+        if not w:
+            return {"error": "end must be after start"}
+        start, end = w
+        bucket = GRAN_TABLE.get(gran, ("m1", 60))[1]
+        c = db()
+        ents = [r[0] for r in c.execute("SELECT DISTINCT entity FROM d1 WHERE entity LIKE ?",
+                                        (f"{sid}:port:%",))]
+        c.close()
+        ports = sorted(int(e.rsplit(":", 1)[1]) for e in ents)[:80]  # bound the fan-out
+        out = {}
+        arch = False
+        for p in ports:
+            d = series_data(f"{sid}:port:{p}", gran, start, end)
+            out[str(p)] = d["points"]
+            arch = arch or d.get("archive")
+        return {"server": sid, "bucket": bucket, "start": start, "end": end,
+                "archive": arch, "series": out}
 
     def sources(self, q):
         """Per-source-IP traffic + per-country aggregation. Optionally filtered
