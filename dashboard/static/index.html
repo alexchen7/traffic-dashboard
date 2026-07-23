@@ -91,6 +91,12 @@ select:focus,input:focus{outline:none;border-color:var(--accent)}
 .chip .pcdot{opacity:.5}
 .chip.on .pcdot{opacity:1}
 #bw-hint{font-size:.72rem;color:var(--muted);margin-left:4px}
+.ext-tt{position:fixed;z-index:100;pointer-events:none;opacity:0;background:var(--panel2);border:1px solid var(--border);
+  border-radius:9px;padding:8px 11px;font-size:.76rem;color:var(--text);box-shadow:0 8px 24px var(--shadow);
+  max-height:82vh;max-width:280px;overflow:hidden;transition:opacity .08s;font-variant-numeric:tabular-nums}
+.ext-tt .tt-title{font-weight:600;margin-bottom:5px;font-size:.74rem}
+.ext-tt .tt-row{display:flex;align-items:center;gap:7px;white-space:nowrap;line-height:1.55}
+.ext-tt .tt-sw{width:9px;height:9px;border-radius:2px;flex:0 0 auto}
 table{width:100%;border-collapse:collapse;font-size:.85rem}
 th{color:var(--muted);font-weight:600;text-align:left;padding:8px 10px;font-size:.72rem;text-transform:uppercase;letter-spacing:.6px;border-bottom:1px solid var(--border)}
 th.sortable{cursor:pointer;user-select:none;white-space:nowrap}
@@ -525,11 +531,36 @@ function buildChips(){
     box.appendChild(c)});
   $('bw-hint').textContent=bwMulti?(bwSel.size?`${bwSel.size} selected`:'showing all — click users to filter'):'';}
 
+// HTML tooltip anchored to the RIGHT of the hovered line so it never covers the point
+function extTooltip(ctx){
+  const t=ctx.tooltip;
+  let el=document.getElementById('ext-tt');
+  if(!el){el=document.createElement('div');el.id='ext-tt';el.className='ext-tt';document.body.appendChild(el)}
+  if(!t.opacity){el.style.opacity='0';return}
+  const title=(t.title&&t.title[0])||'';
+  let rows='';
+  (t.body||[]).forEach((b,i)=>{
+    const c=(t.labelColors&&t.labelColors[i])||{};
+    const sw=c.borderColor||c.backgroundColor||'var(--muted)';
+    rows+=`<div class="tt-row"><span class="tt-sw" style="background:${sw}"></span><span>${esc(b.lines.join(' '))}</span></div>`;
+  });
+  el.innerHTML=`<div class="tt-title">${esc(title)}</div>${rows}`;
+  el.style.opacity='1';
+  const r=ctx.chart.canvas.getBoundingClientRect();
+  const w=el.offsetWidth,h=el.offsetHeight,gap=16;
+  let left=r.left+t.caretX+gap;                 // to the right of the pointer line
+  if(left+w>window.innerWidth-8) left=r.left+t.caretX-gap-w;   // flip left if no room
+  if(left<8) left=8;
+  let top=r.top+t.caretY-h/2;                    // vertically centered on the cursor
+  if(top<8) top=8;
+  if(top+h>window.innerHeight-8) top=window.innerHeight-8-h;
+  el.style.left=left+'px';el.style.top=top+'px';
+}
+
 function chartOpts(fmt,xmin,xmax){const span=xmax-xmin;return{responsive:true,maintainAspectRatio:false,animation:false,
   interaction:{mode:'index',intersect:false},
   plugins:{legend:{labels:{color:cssv('--muted'),boxWidth:12,font:{size:11}}},
-    tooltip:{backgroundColor:cssv('--panel2'),borderColor:cssv('--border'),borderWidth:1,
-      titleColor:cssv('--text'),bodyColor:cssv('--text'),
+    tooltip:{enabled:false,external:extTooltip,
       itemSort:(a,b)=>b.parsed.y-a.parsed.y,
       callbacks:{title:items=>dfmt(items[0].parsed.x,'full'),
                  label:c=>c.dataset.label+': '+fmt(c.parsed.y)}}},
