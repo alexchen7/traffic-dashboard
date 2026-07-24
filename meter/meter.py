@@ -23,7 +23,7 @@ omitted — everything else keeps working.
 
 Usage: meter.py [ensure|report] [--source S] [--include CSV] [--exclude CSV]
 """
-import json, re, subprocess, sys, time
+import json, os, re, subprocess, sys, time
 
 TABLE = "traffic_meter"
 XUI_DB = "/etc/x-ui/x-ui.db"
@@ -160,21 +160,32 @@ def ensure(source, include, exclude):
         m = re.match(r"(?:si|so)_(\d+)$", sname)
         if m and int(m.group(1)) not in want:
             sh(f"nft delete set ip {TABLE} {sname}", check=False)
+    # Did the per-port sets actually get created? Old nft (<0.9.4-ish) can't do
+    # dynamic sets with counters, so the adds above no-op. Without this check the
+    # rules below would reference non-existent @si_ sets and the whole batch would
+    # fail, taking port/host metering down too. When unsupported we fall back to
+    # plain port counters and just omit per-source-IP data.
+    sets_now = list_sets()
+    ipsets_ok = bool(ports) and all(f"si_{p}" in sets_now and f"so_{p}" in sets_now for p in ports)
     have = existing_counters()
     batch = [f"add counter ip {TABLE} {d}_{p}" for p in ports for d in ("in", "out")
              if f"{d}_{p}" not in have]
     if batch:
         sh("nft -f - <<'EOF'\n" + "\n".join(batch) + "\nEOF")
-    # rebuild rules if the monitored set changed OR the per-port set-update
-    # rules aren't present yet (e.g. upgrade from a portless meter)
+    # rebuild rules if the monitored set changed OR (where supported) the per-port
+    # set-update rules aren't present yet (e.g. upgrade from a portless meter)
     need = (chain_ports("meter_pre") != want or chain_ports("meter_post") != want
-            or (ports and not chain_mentions("meter_pre", "@si_")))
+            or (ipsets_ok and ports and not chain_mentions("meter_pre", "@si_")))
     if need:
         lines = [f"flush chain ip {TABLE} meter_pre", f"flush chain ip {TABLE} meter_post"]
         for p in ports:
             for proto in ("tcp", "udp"):
-                lines.append(f'add rule ip {TABLE} meter_pre {proto} dport {p} counter name "in_{p}" update @si_{p} {{ ip saddr }}')
-                lines.append(f'add rule ip {TABLE} meter_post {proto} sport {p} counter name "out_{p}" update @so_{p} {{ ip daddr }}')
+                if ipsets_ok:
+                    lines.append(f'add rule ip {TABLE} meter_pre {proto} dport {p} counter name "in_{p}" update @si_{p} {{ ip saddr }}')
+                    lines.append(f'add rule ip {TABLE} meter_post {proto} sport {p} counter name "out_{p}" update @so_{p} {{ ip daddr }}')
+                else:
+                    lines.append(f'add rule ip {TABLE} meter_pre {proto} dport {p} counter name "in_{p}"')
+                    lines.append(f'add rule ip {TABLE} meter_post {proto} sport {p} counter name "out_{p}"')
         sh("nft -f - <<'EOF'\n" + "\n".join(lines) + "\nEOF")
         # drop counters for ports we no longer monitor (now unreferenced)
         for name in existing_counters():
@@ -233,6 +244,107 @@ def set_elems(name):
 
 MAX_IPS = 2000  # cap total (port,ip) pairs in the report payload
 
+# --- ss fallback: per-source-IP accounting for nft too old for set counters ---
+# Reads `ss` (read-only) each sample and turns per-socket TCP byte counters into
+# monotonic per-(port,ip) totals kept in a small state file, so the dashboard's
+# cumulative-delta model works. Long-lived proxy flows are captured accurately;
+# flows that open AND close entirely between two samples are missed (approximate).
+SS_STATE = "/var/lib/traffic-meter/ss_state.json"
+IP4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+
+
+def _ss_load():
+    try:
+        with open(SS_STATE) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _ss_save(st):
+    try:
+        os.makedirs(os.path.dirname(SS_STATE), exist_ok=True)
+        tmp = SS_STATE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(st, f)
+        os.replace(tmp, SS_STATE)
+    except Exception as e:
+        print(f"ss state save failed: {e}", file=sys.stderr)
+
+
+def _parse_ss(text, portset):
+    """{inode: (localport, peer_ip, bytes_received, bytes_sent)} for monitored ports."""
+    out = {}
+    lines = text.splitlines()
+    i, n = 0, len(lines)
+    while i < n:
+        ln = lines[i]
+        if not ln[:1].strip():           # indented info line without an addr line
+            i += 1
+            continue
+        toks = ln.split()
+        i += 1
+        info = ""
+        if i < n and not lines[i][:1].strip():   # the following tcp_info line
+            info = lines[i]
+            i += 1
+        if len(toks) < 4:
+            continue
+        lp = toks[2].rpartition(":")[2]
+        if not lp.isdigit() or int(lp) not in portset:
+            continue
+        ino = next((t[4:] for t in toks[4:] if t.startswith("ino:")), None)
+        if not ino:
+            continue
+        ip = toks[3].rpartition(":")[0].strip("[]")
+        if ip.startswith("::ffff:"):
+            ip = ip[7:]
+        if not IP4_RE.match(ip):
+            continue
+        br = bs = 0
+        for t in info.split():
+            if t.startswith("bytes_received:"):
+                br = int(t[15:] or 0)
+            elif t.startswith("bytes_sent:"):
+                bs = int(t[11:] or 0)
+        out[ino] = (int(lp), ip, br, bs)
+    return out
+
+
+def ss_ip_bytes(ports):
+    """Monotonic {port: {ip: {"in":upload,"out":download}}} via ss + state file."""
+    portset = set(ports)
+    p = sh("ss -tineH state established", check=False)
+    cur = _parse_ss(p.stdout or "", portset) if p.returncode == 0 else {}
+    st = _ss_load()
+    now = int(time.time())
+    if st is None:   # first ever run: seed baseline, don't count pre-existing bytes
+        _ss_save({"socks": {k: list(v) for k, v in cur.items()}, "acc": {}})
+        return {}
+    prev, acc = st.get("socks", {}), st.get("acc", {})
+    for ino, (port, ip, br, bs) in cur.items():
+        key = f"{port}|{ip}"
+        pv = prev.get(ino)
+        if pv and pv[0] == port and pv[1] == ip:
+            din = br - pv[2]; dout = bs - pv[3]
+            if din < 0: din = br           # socket/inode reused
+            if dout < 0: dout = bs
+        else:
+            din, dout = br, bs             # newly seen socket
+        a = acc.get(key) or [0, 0, now]
+        a[0] += din; a[1] += dout; a[2] = now
+        acc[key] = a
+    cut = now - 26 * 3600                   # drop idle keys (mirror the nft 26h timeout)
+    acc = {k: v for k, v in acc.items() if v[2] >= cut}
+    if len(acc) > MAX_IPS:
+        acc = dict(sorted(acc.items(), key=lambda kv: kv[1][0] + kv[1][1], reverse=True)[:MAX_IPS])
+    _ss_save({"socks": {k: list(v) for k, v in cur.items()}, "acc": acc})
+    ips = {}
+    for key, (cin, cout, _ts) in acc.items():
+        port, ip = key.split("|", 1)
+        ips.setdefault(port, {})[ip] = {"in": cin, "out": cout}
+    return ips
+
 
 def report(source, include, exclude):
     ports, names = ensure(source, include, exclude)
@@ -247,17 +359,23 @@ def report(source, include, exclude):
         if p in pset:
             out_ports.setdefault(p, {})[d] = c.get("bytes", 0)
     # per-port source-IP maps: {port: {ip: {"in":x,"out":y}}}
+    # Prefer kernel nft set counters; fall back to ss sampling on old nft.
     ips = {}
     total_pairs = 0
-    for p in ports:
-        pd = {}
-        for ip, b in set_elems(f"si_{p}").items():
-            pd.setdefault(ip, {})["in"] = b
-        for ip, b in set_elems(f"so_{p}").items():
-            pd.setdefault(ip, {})["out"] = b
-        if pd:
-            ips[str(p)] = pd
-            total_pairs += len(pd)
+    have_sets = list_sets()
+    if ports and any(f"si_{p}" in have_sets for p in ports):
+        for p in ports:
+            pd = {}
+            for ip, b in set_elems(f"si_{p}").items():
+                pd.setdefault(ip, {})["in"] = b
+            for ip, b in set_elems(f"so_{p}").items():
+                pd.setdefault(ip, {})["out"] = b
+            if pd:
+                ips[str(p)] = pd
+                total_pairs += len(pd)
+    else:
+        ips = ss_ip_bytes(ports)
+        total_pairs = sum(len(pd) for pd in ips.values())
     if total_pairs > MAX_IPS:                      # keep the heaviest pairs
         flat = [(pt, ip, v.get("in", 0) + v.get("out", 0))
                 for pt, pd in ips.items() for ip, v in pd.items()]
