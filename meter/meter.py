@@ -137,6 +137,19 @@ def list_sets():
     return out
 
 
+def nft_version():
+    p = sh("nft --version", check=False)
+    m = re.search(r"v(\d+)\.(\d+)\.(\d+)", p.stdout or "")
+    return tuple(int(x) for x in m.groups()) if m else (0, 0, 0)
+
+
+def ipsets_supported():
+    """Per-element set counters only work correctly on nft >= 1.0.0. Older nft
+    either can't create the sets (0.9.3) or creates them but never increments the
+    counters (0.9.8) — in both cases we skip the nft sets and use ss sampling."""
+    return nft_version() >= (1, 0, 0)
+
+
 def ensure(source, include, exclude):
     ports, names = discover(source, include, exclude)
     want = set(ports)
@@ -148,25 +161,31 @@ def ensure(source, include, exclude):
     # daddr). One pair per monitored port so traffic can be attributed to a
     # specific port. Needs nft with stateful set counters; if unsupported the
     # adds fail silently (check=False) and per-IP reporting is simply omitted.
+    cap = ipsets_supported()   # nft >= 1.0.0 (older either can't create sets or won't count them)
     have_sets = list_sets()
     for legacy in ("src_in", "src_out"):        # drop older meter's global sets
         if legacy in have_sets:
             sh(f"nft delete set ip {TABLE} {legacy}", check=False)
-    for p in ports:
-        for pre in ("si", "so"):
-            if f"{pre}_{p}" not in have_sets:
-                sh(f"nft add set ip {TABLE} {pre}_{p} '{{ type ipv4_addr ; flags dynamic,timeout ; timeout 26h ; size 65535 ; counter ; }}'", check=False)
-    for sname in have_sets:                      # drop sets for unmonitored ports
-        m = re.match(r"(?:si|so)_(\d+)$", sname)
-        if m and int(m.group(1)) not in want:
-            sh(f"nft delete set ip {TABLE} {sname}", check=False)
-    # Did the per-port sets actually get created? Old nft (<0.9.4-ish) can't do
-    # dynamic sets with counters, so the adds above no-op. Without this check the
-    # rules below would reference non-existent @si_ sets and the whole batch would
-    # fail, taking port/host metering down too. When unsupported we fall back to
-    # plain port counters and just omit per-source-IP data.
+    if cap:
+        for p in ports:
+            for pre in ("si", "so"):
+                if f"{pre}_{p}" not in have_sets:
+                    sh(f"nft add set ip {TABLE} {pre}_{p} '{{ type ipv4_addr ; flags dynamic,timeout ; timeout 26h ; size 65535 ; counter ; }}'", check=False)
+        for sname in have_sets:                  # drop sets for unmonitored ports
+            m = re.match(r"(?:si|so)_(\d+)$", sname)
+            if m and int(m.group(1)) not in want:
+                sh(f"nft delete set ip {TABLE} {sname}", check=False)
+    else:
+        # old nft: remove any per-port sets left over from a capable-nft era so
+        # the rules below don't reference them; per-IP comes from ss instead
+        for sname in have_sets:
+            if re.match(r"(?:si|so)_\d+$", sname):
+                sh(f"nft delete set ip {TABLE} {sname}", check=False)
+    # ipsets_ok gates whether rules carry the `update @si_` clause. Requires both
+    # a capable nft AND the sets actually present. When false we use plain port
+    # counters and per-source-IP is supplied by ss sampling in report().
     sets_now = list_sets()
-    ipsets_ok = bool(ports) and all(f"si_{p}" in sets_now and f"so_{p}" in sets_now for p in ports)
+    ipsets_ok = cap and bool(ports) and all(f"si_{p}" in sets_now and f"so_{p}" in sets_now for p in ports)
     have = existing_counters()
     batch = [f"add counter ip {TABLE} {d}_{p}" for p in ports for d in ("in", "out")
              if f"{d}_{p}" not in have]
@@ -363,7 +382,7 @@ def report(source, include, exclude):
     ips = {}
     total_pairs = 0
     have_sets = list_sets()
-    if ports and any(f"si_{p}" in have_sets for p in ports):
+    if ipsets_supported() and ports and any(f"si_{p}" in have_sets for p in ports):
         for p in ports:
             pd = {}
             for ip, b in set_elems(f"si_{p}").items():
