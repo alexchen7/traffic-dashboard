@@ -217,13 +217,33 @@ def ensure(source, include, exclude):
     return ports, names
 
 
-def default_iface():
-    with open("/proc/net/route") as f:
-        for line in f.readlines()[1:]:
-            parts = line.split()
-            if parts[1] == "00000000":
-                return parts[0]
-    return "eth0"
+def default_iface(pin=None):
+    """Interface whose counters represent this host's traffic.
+
+    A multi-homed box (e.g. wired + wifi failover, or a VPN) can have SEVERAL
+    default routes. Returning whichever happens to be listed first makes the
+    reported counter jump between interfaces when a link flaps, which the
+    collector would see as a huge burst of traffic. Pick the LOWEST-METRIC
+    default route (the one the kernel actually prefers) so the choice is stable,
+    and allow an explicit --iface pin to remove all ambiguity.
+    """
+    if pin:
+        return pin
+    best, best_metric = None, None
+    try:
+        with open("/proc/net/route") as f:
+            for line in f.readlines()[1:]:
+                parts = line.split()
+                if len(parts) > 6 and parts[1] == "00000000":
+                    try:
+                        metric = int(parts[6])
+                    except ValueError:
+                        metric = 0
+                    if best_metric is None or metric < best_metric:
+                        best, best_metric = parts[0], metric
+    except OSError:
+        pass
+    return best or "eth0"
 
 
 def host_bytes(iface):
@@ -365,7 +385,7 @@ def ss_ip_bytes(ports):
     return ips
 
 
-def report(source, include, exclude):
+def report(source, include, exclude, iface_pin=None):
     ports, names = ensure(source, include, exclude)
     pset = {str(p) for p in ports}
     j = nft_json(f"list counters table ip {TABLE}")
@@ -403,7 +423,7 @@ def report(source, include, exclude):
         ips = {pt: {ip: v for ip, v in pd.items() if (pt, ip) in keep}
                for pt, pd in ips.items()}
         ips = {pt: pd for pt, pd in ips.items() if pd}
-    iface = default_iface()
+    iface = default_iface(iface_pin)
     rx, tx = host_bytes(iface)
     print(json.dumps({"ts": int(time.time()), "ports": out_ports,
                       "names": {str(k): v for k, v in names.items()},
@@ -412,7 +432,7 @@ def report(source, include, exclude):
 
 
 def parse_args(argv):
-    mode, source, include, exclude = "report", "none", [], []
+    mode, source, include, exclude, iface = "report", "none", [], [], None
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -424,14 +444,18 @@ def parse_args(argv):
             i += 1; include = [int(x) for x in argv[i].split(",") if x.strip().isdigit()]
         elif a == "--exclude" and i + 1 < len(argv):
             i += 1; exclude = [int(x) for x in argv[i].split(",") if x.strip().isdigit()]
+        elif a == "--iface" and i + 1 < len(argv):
+            i += 1
+            if re.fullmatch(r"[A-Za-z0-9_.@:-]+", argv[i]):
+                iface = argv[i]
         i += 1
-    return mode, source, include, exclude
+    return mode, source, include, exclude, iface
 
 
 if __name__ == "__main__":
-    mode, source, include, exclude = parse_args(sys.argv[1:])
+    mode, source, include, exclude, iface = parse_args(sys.argv[1:])
     if mode == "ensure":
         ports, names = ensure(source, include, exclude)
         print(json.dumps({"ports": ports, "names": {str(k): v for k, v in names.items()}}))
     else:
-        report(source, include, exclude)
+        report(source, include, exclude, iface)

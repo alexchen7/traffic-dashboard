@@ -42,6 +42,9 @@ DEFAULT_SRV = {"reset_day": 1, "quota_gb": 0, "tz_offset": 8,
 DEFAULT_RETENTION = {"m1": 8, "h1": 120, "d1": 0, "ips": 60, "health": 120}
 RETENTION_MAX_DAYS = 3650
 IP_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+# Upper bound on believable throughput for a single entity. Anything above this
+# is a counter artifact (interface swap / reset), not traffic; see record().
+MAX_SANE_BPS = 25e9
 
 RATES = {}
 RATES_LOCK = threading.Lock()
@@ -156,8 +159,18 @@ def record(c, entity, ts, cum_in, cum_out, last, tzoff):
         return
     din = cum_in - lin
     dout = cum_out - lout
-    if din < 0: din = cum_in
-    if dout < 0: dout = cum_out
+    # A negative delta means the counter source changed under us: a reboot, an
+    # nft table rebuild, a node migration, or the host's default route flipping
+    # to another interface. Re-baseline (count nothing) instead of treating the
+    # new cumulative value as one sample's worth of traffic — doing the latter
+    # injects the whole counter (terabytes) as a single burst.
+    if din < 0: din = 0
+    if dout < 0: dout = 0
+    # Plausibility clamp: no interface here can carry this, so a sample above it
+    # is a counter artifact, not traffic. Drop it rather than poison the rollups.
+    if (din + dout) > MAX_SANE_BPS / 8 * dt:
+        print(f"implausible sample dropped for {entity}: {din + dout} bytes in {dt}s", file=sys.stderr)
+        return
     upsert(c, "s10", entity, ts - ts % 10, din, dout)
     upsert(c, "m1", entity, ts - ts % 60, din, dout)
     upsert(c, "h1", entity, ts - ts % 3600, din, dout)
@@ -182,9 +195,11 @@ def record_ip(c, sid, ip, port, ts, cum_in, cum_out, last, tzoff):
         return
     din = cum_in - lin
     dout = cum_out - lout
-    if din < 0: din = cum_in       # set element expired & recreated
-    if dout < 0: dout = cum_out
+    if din < 0: din = 0            # set element expired & recreated -> re-baseline
+    if dout < 0: dout = 0
     if din == 0 and dout == 0:
+        return
+    if (din + dout) > MAX_SANE_BPS / 8 * dt:
         return
     day = ((ts + tzoff * 3600) // 86400) * 86400 - tzoff * 3600
     c.execute("""INSERT INTO ips(sid,ip,port,day,din,dout) VALUES(?,?,?,?,?,?)
