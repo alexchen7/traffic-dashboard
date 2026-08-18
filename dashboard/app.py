@@ -21,6 +21,7 @@
 """
 import calendar, concurrent.futures, copy, hashlib, hmac, http.cookies, json, os, re, secrets
 import socketserver, sqlite3, subprocess, sys, threading, time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -1042,6 +1043,11 @@ class Handler(BaseHTTPRequestHandler):
         for kv in q.split("&"):
             if "=" in kv:
                 k, v = kv.split("=", 1)
+                try:
+                    k = urllib.parse.unquote(k)
+                    v = urllib.parse.unquote(v)
+                except Exception:
+                    pass
                 params[k] = v
         return p, params
 
