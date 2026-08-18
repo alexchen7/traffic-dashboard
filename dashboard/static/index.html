@@ -297,6 +297,19 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
 
 <div class="panel">
   <div class="head">
+    <h2>&#128100; Per-client usage</h2><span class="sub" id="cl-note"></span>
+    <div class="spacer"></div>
+    <label class="sub" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+      <input type="checkbox" id="cl-all"> all servers</label>
+  </div>
+  <table class="rtable">
+    <thead><tr><th>Client</th><th>Port</th><th>Server</th><th>Share</th><th>Upload &#8593;</th><th>Download &#8595;</th><th>Total</th></tr></thead>
+    <tbody id="client-rows"></tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <div class="head">
     <h2>&#128147; Node health</h2><span class="sub" id="hl-note"></span>
     <div class="spacer"></div>
     <div class="seg" id="hl-range"></div>
@@ -431,7 +444,7 @@ function buildSegs(){
   // clicking any bandwidth/usage/sources preset exits a custom snapshot and goes live
   seg($('bw-range'),customStart!=null?-1:bwRange,s=>{exitCustom();bwRange=s;buildSegs();refreshSpeed()});
   seg($('us-range'),customStart!=null?-1:usRange,s=>{exitCustom();usRange=s;buildSegs();refreshUsage()});
-  dayseg($('src-range'),customStart!=null?-1:srcDays,d=>{exitCustom();srcDays=d;buildSegs();refreshSources()});
+  dayseg($('src-range'),customStart!=null?-1:srcDays,d=>{exitCustom();srcDays=d;buildSegs();refreshSources();refreshClients()});
   dayseg($('hl-range'),hlDays,d=>{hlDays=d;buildSegs();refreshHealth()})}
 
 /* ---------- custom range (shared: Bandwidth / Data used / Traffic sources) ---------- */
@@ -457,9 +470,9 @@ function applyCustom(){
   customStart=a;customEnd=b;
   $('cr-toggle').style.borderColor='var(--accent2)';
   $('cr-active').textContent='snapshot '+dfmt(a,'full')+'  →  '+dfmt(b,'full');
-  buildSegs();refreshCharts();refreshSources();toast('Custom range applied (paused live refresh)')}
+  buildSegs();refreshCharts();refreshSources();refreshClients();toast('Custom range applied (paused live refresh)')}
 function exitCustom(){customStart=customEnd=null;$('cr-active').textContent='';$('cr-toggle').style.borderColor=''}
-function clearCustom(){exitCustom();buildSegs();refreshCharts();refreshSources();toast('Back to live')}
+function clearCustom(){exitCustom();buildSegs();refreshCharts();refreshSources();refreshClients();toast('Back to live')}
 
 function srv(){return OV?OV.servers.find(s=>s.id===sel):null}
 
@@ -516,7 +529,7 @@ function buildChips(){
     if(bwMulti){bwMulti=false;entity=s.id;}
     else if(entity===s.id){bwMulti=true;bwSel.clear();}
     else{entity=s.id;}
-    buildChips();refreshCharts();refreshSources()};
+    buildChips();refreshCharts();refreshSources();refreshClients()};
   box.appendChild(tot);
   // per-port chips
   s.ports.forEach(p=>{
@@ -527,7 +540,7 @@ function buildChips(){
     c.appendChild(document.createTextNode(p.name));c.title=id;
     c.onclick=()=>{
       if(bwMulti){bwSel.has(p.port)?bwSel.delete(p.port):bwSel.add(p.port);buildChips();refreshSpeed();}
-      else{entity=id;buildChips();refreshCharts();refreshSources();}};
+      else{entity=id;buildChips();refreshCharts();refreshSources();refreshClients();}};
     box.appendChild(c)});
   $('bw-hint').textContent=bwMulti?(bwSel.size?`${bwSel.size} selected`:'showing all — click users to filter'):'';}
 
@@ -623,7 +636,7 @@ function attachZoom(chart){
     customStart=t0;customEnd=t1;
     $('cr-active').textContent='zoom '+dfmt(t0,'full')+' → '+dfmt(t1,'full');
     $('cr-toggle').style.borderColor='var(--accent2)';
-    buildSegs();refreshCharts();refreshSources()}
+    buildSegs();refreshCharts();refreshSources();refreshClients()}
   cv.onmousedown=e=>{if(e.button!==0)return;const a=chart.chartArea,r=cv.getBoundingClientRect();
     const x=e.clientX-r.left,y=e.clientY-r.top;
     if(x<a.left||x>a.right||y<a.top||y>a.bottom)return;
@@ -631,7 +644,7 @@ function attachZoom(chart){
     sel.style.left=x0+'px';sel.style.top=a.top+'px';sel.style.height=(a.bottom-a.top)+'px';sel.style.width='0px';
     cv.parentNode.appendChild(sel);
     window.addEventListener('mousemove',move);window.addEventListener('mouseup',up);e.preventDefault()};
-  cv.ondblclick=()=>{if(customStart!=null){exitCustom();buildSegs();refreshCharts();refreshSources()}}}
+  cv.ondblclick=()=>{if(customStart!=null){exitCustom();buildSegs();refreshCharts();refreshSources();refreshClients()}}}
 
 async function refreshUsage(){
   if(!entity)return;
@@ -639,7 +652,10 @@ async function refreshUsage(){
   const g=usGran==='auto'?autoUs(w.span):usGran;
   const d=await (await api(`/api/series?entity=${entity}&gran=${g}&${seriesQ(w)}`)).json();
   const s=srv();
-  const nm=entity===s.id?'Total':(s.ports.find(p=>`${s.id}:port:${p.port}`===entity)||{}).name||entity;
+  const cm=entity&&entity.match(/^[a-z0-9_]+:client:(\d+):(.+)$/);
+  const nm=entity===s.id?'Total'
+          :cm?`client ${cm[2]} (port ${cm[1]})`
+          :(s.ports.find(p=>`${s.id}:port:${p.port}`===entity)||{}).name||entity;
   $('usage-note').textContent=`${nm} · per ${ {'10s':'10 sec','1m':'minute','1h':'hour','1d':'day'}[g] }`;
   const cIn=hexRgb(cssv('--accent')),cOut=hexRgb(cssv('--accent2'));
   const ds=[{label:'In',data:d.points.map(p=>({x:p[0],y:p[1]})),backgroundColor:cIn.replace(')',' / .75)'),stack:'s'},
@@ -653,7 +669,7 @@ function hexRgb(h){h=h.replace('#','');if(h.length===3)h=h.split('').map(c=>c+c)
 
 function refreshCharts(){refreshSpeed();refreshUsage()}
 function rebuildCharts(){refreshCharts()}
-function refreshExtras(){refreshSources();refreshHealth()}
+function refreshExtras(){refreshSources();refreshClients();refreshHealth()}
 
 function portRate(sid,p){const r=OV.rates[`${sid}:port:${p.port}`];return r?(r.in||0)+(r.out||0):-1}
 function sortPorts(sid,list){
@@ -767,6 +783,36 @@ async function refreshSources(){
   if(d.other>0){const tr=document.createElement('tr');
     tr.innerHTML=`<td class="rt-hide"></td><td class="sub" data-label="" colspan="3">other IPs beyond top 50</td>
       <td class="rt-hide"></td><td class="rt-hide"></td><td class="mono" data-label="Total">${fmtB(d.other)}</td>`;tb.appendChild(tr)}}
+
+/* ---------- per-client usage (x-ui accounting) ---------- */
+let clAll=false;
+async function refreshClients(){
+  const s=srv();if(!s&&!clAll)return;
+  const port=selectedPort();
+  const rangeq=customStart!=null?`start=${customStart}&end=${customEnd}`:`days=${srcDays}`;
+  const qs=rangeq+(clAll?'':`&server=${sel}`)+(port&&!clAll?`&port=${port}`:'');
+  let d;try{d=await (await api('/api/clients?'+qs)).json()}catch(e){return}
+  const win=customStart!=null?`${dfmt(customStart,'date')} → ${dfmt(customEnd,'date')}`:`last ${srcDays}d`;
+  const scope=clAll?'all servers':(port?`${s.name} · ${esc(portName(port))}`:s.name);
+  $('cl-note').textContent=`${scope} · ${d.clients.length} client${d.clients.length===1?'':'s'} · ${win} — click a row to chart it`;
+  const tb=$('client-rows');tb.innerHTML='';
+  if(!d.clients.length){
+    tb.innerHTML='<tr><td class="sub" colspan="7">No per-client data. Requires an x-ui (3x-ui) node; clients appear after the next sample.</td></tr>';return}
+  d.clients.forEach(p=>{
+    const tr=document.createElement('tr');
+    tr.style.cursor='pointer';
+    tr.title='Click to chart this client in Bandwidth / Data used';
+    tr.onclick=()=>{ if(p.server!==sel){sel=p.server;buildServerCards();renderPorts();updateTz();}
+      bwMulti=false;entity=p.entity;buildChips();refreshCharts();
+      toast('Charting '+p.email);window.scrollTo({top:0,behavior:'smooth'}) };
+    tr.innerHTML=`<td data-label="Client"><b>${esc(p.email)}</b></td>
+      <td class="mono" data-label="Port">${p.port}</td>
+      <td data-label="Server" style="font-size:.8rem">${esc(p.server_name)}</td>
+      <td data-label="Share"><span class="pctbar"><i style="width:${Math.min(100,p.share)}%"></i></span><span class="mono" style="color:var(--muted);font-size:.76rem">${p.share}%</span></td>
+      <td class="mono up" data-label="Upload ↑">${fmtB(p.in)}</td>
+      <td class="mono down" data-label="Download ↓">${fmtB(p.out)}</td>
+      <td class="mono" data-label="Total"><b>${fmtB(p.total)}</b></td>`;
+    tb.appendChild(tr)})}
 
 /* ---------- node health ---------- */
 async function refreshHealth(){
@@ -899,6 +945,7 @@ setInterval(tickClock,1000);tickClock();
 $('bw-gran').addEventListener('change',e=>{bwGran=e.target.value;refreshSpeed()});
 $('us-gran').addEventListener('change',e=>{usGran=e.target.value;refreshUsage()});
 $('src-all').addEventListener('change',e=>{srcAll=e.target.checked;refreshSources()});
+$('cl-all').addEventListener('change',e=>{clAll=e.target.checked;refreshClients()});
 ['ret-m1','ret-h1','ret-d1'].forEach(id=>$(id).addEventListener('input',updateRetWarn));
 applyView();
 buildSegs();

@@ -64,6 +64,42 @@ def ports_from_nft_forward():
     return ports, names
 
 
+def xui_clients(monitored=None):
+    """Per-CLIENT cumulative counters straight from 3x-ui's own accounting:
+    {port: {email: {"in": up, "out": down}}}.
+
+    Several clients can share one inbound (one port), and when they arrive
+    through a relay they all present the same source IP — so neither port
+    counters nor per-source-IP tracking can tell them apart. x-ui meters each
+    client (UUID/email) itself, which is the only reliable split in that case.
+    Values are cumulative and may be reset by the admin; the collector's
+    delta logic re-baselines on a decrease.
+    """
+    out = {}
+    import os, sqlite3
+    if not os.path.exists(XUI_DB):
+        return out
+    try:
+        c = sqlite3.connect(f"file:{XUI_DB}?mode=ro", uri=True, timeout=5)
+        rows = c.execute("""SELECT i.port, t.email, t.up, t.down
+                            FROM client_traffics t JOIN inbounds i ON i.id = t.inbound_id""").fetchall()
+        c.close()
+    except Exception as e:
+        print(f"xui client read failed: {e}", file=sys.stderr)
+        return out
+    for port, email, up, down in rows:
+        try:
+            p = int(port)
+        except (TypeError, ValueError):
+            continue
+        if monitored is not None and p not in monitored:
+            continue
+        if not email:
+            continue
+        out.setdefault(str(p), {})[str(email)[:64]] = {"in": int(up or 0), "out": int(down or 0)}
+    return out
+
+
 def ports_from_xui():
     ports, names = set(), {}
     import os, sqlite3
@@ -428,6 +464,7 @@ def report(source, include, exclude, iface_pin=None):
     print(json.dumps({"ts": int(time.time()), "ports": out_ports,
                       "names": {str(k): v for k, v in names.items()},
                       "ips": ips,
+                      "clients": xui_clients(set(ports)) if source == "xui" else {},
                       "host": {"rx": rx, "tx": tx, "iface": iface}}))
 
 

@@ -76,6 +76,9 @@ def init_db():
         c.execute("DROP TABLE ips")
     c.execute("CREATE TABLE IF NOT EXISTS ips (sid TEXT, ip TEXT, port INTEGER, day INTEGER, din INTEGER, dout INTEGER, PRIMARY KEY(sid, ip, port, day))")
     c.execute("CREATE TABLE IF NOT EXISTS health (sid TEXT, ts INTEGER, ok INTEGER, total INTEGER, PRIMARY KEY(sid, ts))")
+    # per-CLIENT usage from x-ui's own accounting: the only way to split several
+    # clients sharing one inbound/port (esp. when they arrive via one relay IP)
+    c.execute("CREATE TABLE IF NOT EXISTS clients (sid TEXT, email TEXT, port INTEGER, day INTEGER, din INTEGER, dout INTEGER, PRIMARY KEY(sid, email, port, day))")
     c.commit()
     # ---- migrate v1 entities -> v2 namespaced ----
     row = c.execute("SELECT v FROM meta WHERE k='schema_v'").fetchone()
@@ -207,6 +210,32 @@ def record_ip(c, sid, ip, port, ts, cum_in, cum_out, last, tzoff):
               (sid, ip, port, day, din, dout))
 
 
+def record_client(c, sid, email, port, ts, cum_in, cum_out, last, tzoff):
+    """Delta an x-ui per-client cumulative counter into a daily bucket.
+    Uses a '|' key so it can't collide with the ':' series entity key."""
+    key = f"{sid}|cl|{port}|{email}"
+    prev = last.get(key)
+    last[key] = (ts, cum_in, cum_out)
+    if prev is None:
+        return
+    lts, lin, lout = prev
+    dt = ts - lts
+    if dt <= 0 or dt > 3600:
+        return
+    din = cum_in - lin
+    dout = cum_out - lout
+    if din < 0: din = 0        # admin reset the client's counters -> re-baseline
+    if dout < 0: dout = 0
+    if din == 0 and dout == 0:
+        return
+    if (din + dout) > MAX_SANE_BPS / 8 * dt:
+        return
+    day = ((ts + tzoff * 3600) // 86400) * 86400 - tzoff * 3600
+    c.execute("""INSERT INTO clients(sid,email,port,day,din,dout) VALUES(?,?,?,?,?,?)
+                 ON CONFLICT(sid,email,port,day) DO UPDATE SET din=din+excluded.din, dout=dout+excluded.dout""",
+              (sid, email, port, day, din, dout))
+
+
 def record_health(c, sid, ts, ok):
     c.execute("""INSERT INTO health(sid,ts,ok,total) VALUES(?,?,?,1)
                  ON CONFLICT(sid,ts) DO UPDATE SET ok=ok+excluded.ok, total=total+1""",
@@ -327,6 +356,7 @@ def prune(c, now, retention=None):
     days = int(r.get("ips", DEFAULT_RETENTION["ips"]) or 0)
     if days > 0:
         c.execute("DELETE FROM ips WHERE day < ?", (now - days * 86400,))
+        c.execute("DELETE FROM clients WHERE day < ?", (now - days * 86400,))
     days = int(r.get("health", DEFAULT_RETENTION["health"]) or 0)
     if days > 0:
         c.execute("DELETE FROM health WHERE ts < ?", (now - days * 86400,))
@@ -358,6 +388,23 @@ def collector():
                 ts = int(time.time())
                 for port, v in r.get("ports", {}).items():
                     record(c, f"{sid}:port:{port}", ts, v.get("in", 0), v.get("out", 0), last, tzoff)
+                for port_str, cmap in (r.get("clients") or {}).items():
+                    try:
+                        cport = int(port_str)
+                    except (TypeError, ValueError):
+                        continue
+                    if not isinstance(cmap, dict):
+                        continue
+                    for email, v in cmap.items():
+                        try:
+                            cin, cout = int(v.get("in", 0)), int(v.get("out", 0))
+                            # daily aggregate (per-client panel) ...
+                            record_client(c, sid, str(email)[:64], cport, ts, cin, cout, last, tzoff)
+                            # ... and full rollups, so per-client has the same
+                            # 10s/1m/1h/1d granularity and charts as a port
+                            record(c, client_entity(sid, cport, email), ts, cin, cout, last, tzoff)
+                        except (TypeError, ValueError, AttributeError):
+                            pass
                 for port_str, ipmap in (r.get("ips") or {}).items():
                     try:
                         port = int(port_str)
@@ -645,6 +692,7 @@ def export_payload():
             for t in DATA_TABLES}
     raw_last = [list(r) for r in c.execute("SELECT entity,ts,bin,bout FROM raw_last")]
     ips = [list(r) for r in c.execute("SELECT sid,ip,port,day,din,dout FROM ips ORDER BY sid,ip,port,day")]
+    clients = [list(r) for r in c.execute("SELECT sid,email,port,day,din,dout FROM clients ORDER BY sid,email,port,day")]
     health = [list(r) for r in c.execute("SELECT sid,ts,ok,total FROM health ORDER BY sid,ts")]
     row = c.execute("SELECT v FROM meta WHERE k='settings'").fetchone()
     settings = json.loads(row[0]) if row else {"servers": {}}
@@ -658,7 +706,8 @@ def export_payload():
     return {"format": EXPORT_FORMAT, "version": EXPORT_VERSION,
             "exported_at": int(time.time()),
             "servers": servers, "settings": settings, "geo": geo, "ipgeo": ipgeo,
-            "data": data, "raw_last": raw_last, "ips": ips, "health": health}
+            "data": data, "raw_last": raw_last, "ips": ips, "health": health,
+            "clients": clients}
 
 
 def _clean_server(s):
@@ -806,7 +855,17 @@ def import_payload(d):
             hp_rows.append((sid_, ts_, ok_, tot_))
     c.executemany("""INSERT INTO health(sid,ts,ok,total) VALUES(?,?,?,?)
                      ON CONFLICT(sid,ts) DO UPDATE SET ok=excluded.ok, total=excluded.total""", hp_rows)
-    stats["rows"] += len(ips_rows) + len(hp_rows)
+    cl_rows = []
+    for r in d.get("clients") or []:
+        try:
+            sid_, em_, port_, day_, di_, do_ = str(r[0]), str(r[1])[:64], int(r[2]), int(r[3]), int(r[4]), int(r[5])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if re.fullmatch(r"[a-z0-9_]+", sid_) and em_ and port_ >= 0 and day_ >= 0 and di_ >= 0 and do_ >= 0:
+            cl_rows.append((sid_, em_, port_, day_, di_, do_))
+    c.executemany("""INSERT INTO clients(sid,email,port,day,din,dout) VALUES(?,?,?,?,?,?)
+                     ON CONFLICT(sid,email,port,day) DO UPDATE SET din=excluded.din, dout=excluded.dout""", cl_rows)
+    stats["rows"] += len(ips_rows) + len(hp_rows) + len(cl_rows)
     c.commit(); c.close()
     return stats
 
@@ -877,7 +936,15 @@ def set_password_hash(new_hash):
 # ---------------- HTTP ----------------
 
 GRAN_TABLE = {"10s": ("s10", 10), "1m": ("m1", 60), "1h": ("h1", 3600), "1d": ("d1", 86400)}
-ENTITY_RE = re.compile(r"^([a-z0-9_]+)(?::port:(\d+))?$")
+# entity forms: "<sid>", "<sid>:port:<n>", "<sid>:client:<port>:<name>"
+ENTITY_RE = re.compile(r"^([a-z0-9_]+)(?::port:(\d+)|:client:(\d+):([A-Za-z0-9_.@\-]{1,48}))?$")
+
+
+def client_entity(sid, port, email):
+    """Series entity for one x-ui client, so per-client traffic gets the same
+    10s/1m/1h/1d rollups (and charts, zoom, retention) as a port."""
+    safe = re.sub(r"[^A-Za-z0-9_.@\-]", "_", str(email))[:48] or "unnamed"
+    return f"{sid}:client:{int(port)}:{safe}"
 
 
 def window_from_q(q):
@@ -1005,6 +1072,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/health":
             self._send(200, self.health_api(q))
+            return
+        if path == "/api/clients":
+            self._send(200, self.clients_api(q))
             return
         if path == "/api/export":
             fname = time.strftime("traffic-dash-export-%Y%m%d-%H%M%S.json")
@@ -1293,6 +1363,51 @@ class Handler(BaseHTTPRequestHandler):
                 "custom": bool(custom), "start": since, "end": until,
                 "ips_tracked": len(rows), "top": top, "other": other,
                 "countries": clist[:30]}
+
+    def clients_api(self, q):
+        """Per-client usage (x-ui accounting). Splits clients that share one
+        inbound/port, which port- and IP-level counters cannot do."""
+        sid = q.get("server", "")
+        if sid and sid not in SERVERS:
+            return {"error": "unknown server"}
+        now = int(time.time())
+        custom = str(q.get("start", "")).lstrip("-").isdigit() and str(q.get("end", "")).lstrip("-").isdigit()
+        if custom:
+            since = int(q["start"]) - (int(q["start"]) % 86400)
+            until = min(int(q["end"]), now)
+            days = max(1, round((until - since) / 86400))
+        else:
+            try:
+                days = max(1, min(int(q.get("days", 7)), 365))
+            except ValueError:
+                days = 7
+            since, until = now - days * 86400, now + 1
+        port = int(q["port"]) if str(q.get("port", "")).isdigit() else None
+        sql = "SELECT sid,email,port,SUM(din),SUM(dout) FROM clients WHERE day>=? AND day<=?"
+        args = [since, until]
+        if sid:
+            sql += " AND sid=?"; args.append(sid)
+        if port is not None:
+            sql += " AND port=?"; args.append(port)
+        sql += " GROUP BY sid,email,port ORDER BY SUM(din+dout) DESC LIMIT 200"
+        c = db()
+        rows = c.execute(sql, args).fetchall()
+        c.close()
+        total = sum(r[3] + r[4] for r in rows) or 1
+        s = get_settings()
+        out = []
+        for sid_, email, p, di, do_ in rows:
+            st = s["servers"].get(sid_, {})
+            out.append({"server": sid_,
+                        "server_name": st.get("display_name") or (SERVERS.get(sid_, {}) or {}).get("name", sid_),
+                        "email": email, "port": p,
+                        "entity": client_entity(sid_, p, email),   # chartable at 10s/1m/1h/1d
+                        "port_name": st.get("port_names", {}).get(str(p)) or f"Port {p}",
+                        "in": di, "out": do_, "total": di + do_,
+                        "share": round(100 * (di + do_) / total, 2)})
+        return {"days": days, "server": sid or "all", "port": port,
+                "custom": bool(custom), "start": since, "end": until,
+                "total": sum(r[3] + r[4] for r in rows), "clients": out}
 
     def health_api(self, q):
         """Uptime per server: percentage, 96-segment strip, last incident."""
