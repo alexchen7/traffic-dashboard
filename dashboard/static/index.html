@@ -230,6 +230,19 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
 
 <div class="panel">
   <div class="head">
+    <h2>&#128100; Per-client usage</h2><span class="sub" id="cl-note"></span>
+    <div class="spacer"></div>
+    <label class="sub" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+      <input type="checkbox" id="cl-all"> all servers</label>
+  </div>
+  <table class="rtable">
+    <thead><tr><th>Client</th><th>Port</th><th>Server</th><th>Share</th><th>Upload &#8593;</th><th>Download &#8595;</th><th>Total</th></tr></thead>
+    <tbody id="client-rows"></tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <div class="head">
     <h2>Bandwidth</h2>
     <div class="chips" id="entity-chips"></div>
     <span id="bw-hint"></span>
@@ -295,18 +308,6 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
   </table>
 </div>
 
-<div class="panel">
-  <div class="head">
-    <h2>&#128100; Per-client usage</h2><span class="sub" id="cl-note"></span>
-    <div class="spacer"></div>
-    <label class="sub" style="display:flex;align-items:center;gap:6px;cursor:pointer">
-      <input type="checkbox" id="cl-all"> all servers</label>
-  </div>
-  <table class="rtable">
-    <thead><tr><th>Client</th><th>Port</th><th>Server</th><th>Share</th><th>Upload &#8593;</th><th>Download &#8595;</th><th>Total</th></tr></thead>
-    <tbody id="client-rows"></tbody>
-  </table>
-</div>
 
 <div class="panel">
   <div class="head">
@@ -386,9 +387,22 @@ let srcDays=7, srcAll=false, hlDays=1;
 let customStart=null, customEnd=null;   // epochs when a custom snapshot is active
 let portSort={key:'total',dir:-1};      // ports table sort (dir: 1 asc, -1 desc)
 let portsPaused=false;                    // freeze ports-table auto-refresh
-let bwMulti=false;                        // bandwidth per-user (multi-line) mode
-const bwSel=new Set();                    // selected ports in multi mode (empty = all)
+let bwMulti=false;                        // bandwidth overlay (multi-line) mode
+const bwSel=new Set();                    // selected ENTITIES to overlay (empty = all ports)
+let CLIENTS=[];                           // per-client rows for the chip list
 function portColor(port){const h=(port*47)%360;return `hsl(${h} 70% 55%)`}
+function entColor(ent){                   // stable colour for any entity (port or client)
+  const m=ent&&ent.match(/^[a-z0-9_]+:port:(\d+)$/);
+  if(m)return portColor(+m[1]);
+  let h=0;for(let i=0;i<ent.length;i++)h=(h*31+ent.charCodeAt(i))%360;
+  return `hsl(${h} 65% 58%)`}
+function entLabel(ent){
+  const s=srv();
+  const c=ent.match(/^[a-z0-9_]+:client:(\d+):(.+)$/);
+  if(c)return `${c[2]} :${c[1]}`;
+  const p=ent.match(/^[a-z0-9_]+:port:(\d+)$/);
+  if(p&&s){const q=(s.ports||[]).find(x=>String(x.port)===p[1]);return q?q.name:'Port '+p[1]}
+  return ent}
 const RANGES=[['1h',3600],['6h',21600],['24h',86400],['7d',604800],['30d',2592000]];
 const DAYRANGES=[['24h',1],['7d',7],['30d',30],['90d',90]];
 
@@ -526,23 +540,26 @@ function buildChips(){
   tot.textContent=bwMulti?'◧ Per-user':'Total';
   tot.title=bwMulti?'Back to Total':'Click again to split bandwidth into one curve per user';
   tot.onclick=()=>{
-    if(bwMulti){bwMulti=false;entity=s.id;}
+    if(bwMulti){bwMulti=false;bwSel.clear();entity=s.id;}
     else if(entity===s.id){bwMulti=true;bwSel.clear();}
     else{entity=s.id;}
     buildChips();refreshCharts();refreshSources();refreshClients()};
   box.appendChild(tot);
-  // per-port chips
-  s.ports.forEach(p=>{
-    const id=`${s.id}:port:${p.port}`;
-    const on=bwMulti?bwSel.has(p.port):(id===entity);
+  // one chip per entity: monitored ports, then x-ui clients (overlayable together)
+  const items=[...s.ports.map(p=>({ent:`${s.id}:port:${p.port}`,label:p.name,kind:'port'})),
+               ...CLIENTS.filter(c=>c.server===s.id).map(c=>({ent:c.entity,label:'\u{1F464} '+c.email+' :'+c.port,kind:'client'}))];
+  items.forEach(it=>{
+    const on=bwMulti?bwSel.has(it.ent):(it.ent===entity);
     const c=document.createElement('span');c.className='chip'+(on?' on':'');
-    if(bwMulti){const dot=document.createElement('i');dot.className='pcdot';dot.style.background=portColor(p.port);c.appendChild(dot);}
-    c.appendChild(document.createTextNode(p.name));c.title=id;
+    if(bwMulti){const dot=document.createElement('i');dot.className='pcdot';dot.style.background=entColor(it.ent);c.appendChild(dot);}
+    c.appendChild(document.createTextNode(it.label));c.title=it.ent;
     c.onclick=()=>{
-      if(bwMulti){bwSel.has(p.port)?bwSel.delete(p.port):bwSel.add(p.port);buildChips();refreshSpeed();}
-      else{entity=id;buildChips();refreshCharts();refreshSources();refreshClients();}};
+      if(bwMulti){bwSel.has(it.ent)?bwSel.delete(it.ent):bwSel.add(it.ent);buildChips();refreshSpeed();}
+      else{entity=it.ent;buildChips();refreshCharts();refreshSources();refreshClients();}};
     box.appendChild(c)});
-  $('bw-hint').textContent=bwMulti?(bwSel.size?`${bwSel.size} selected`:'showing all — click users to filter'):'';}
+  $('bw-hint').textContent=bwMulti
+    ?(bwSel.size?`overlaying ${bwSel.size} — click to add/remove`:'showing all ports — click any port or 👤 client to overlay')
+    :'';}
 
 // HTML tooltip anchored to the RIGHT of the hovered line so it never covers the point
 function extTooltip(ctx){
@@ -603,20 +620,33 @@ async function refreshSpeed(){
   speedChart=new Chart($('speedChart'),{type:'line',data:{datasets:ds},options:chartOpts(fmtRate,d.start,d.end)});
   attachZoom(speedChart)}
 
-// per-user mode: one line per port = combined (in+out) bandwidth, distinct colours
+// overlay mode: one coloured line per selected entity (ports and/or x-ui clients,
+// mixable across different ports); with nothing selected it shows all ports.
 async function refreshSpeedMulti(){
   const s=srv();if(!s)return;
   const w=win(bwRange);
   const g=bwGran==='auto'?autoBw(w.span):bwGran;
-  const d=await (await api(`/api/series_multi?server=${sel}&gran=${g}&${seriesQ(w)}`)).json();
-  const showAll=bwSel.size===0;
-  const ds=(s.ports||[]).filter(p=>showAll||bwSel.has(p.port)).map(p=>{
-    const col=portColor(p.port);
-    const pts=(d.series[p.port]||[]).map(r=>({x:r[0],y:(r[1]+r[2])/d.bucket}));
-    return {label:p.name,data:pts,borderColor:col,backgroundColor:col,fill:false,pointRadius:0,borderWidth:1.4,tension:.2};
-  });
+  let ds=[],start,end;
+  if(bwSel.size){
+    const ents=[...bwSel];
+    const res=await Promise.all(ents.map(e=>api(`/api/series?entity=${encodeURIComponent(e)}&gran=${g}&${seriesQ(w)}`).then(r=>r.json()).catch(()=>null)));
+    res.forEach((d,i)=>{
+      if(!d||d.error)return;
+      start=start??d.start;end=end??d.end;
+      const col=entColor(ents[i]);
+      ds.push({label:entLabel(ents[i]),data:d.points.map(p=>({x:p[0],y:(p[1]+p[2])/d.bucket})),
+               borderColor:col,backgroundColor:col,fill:false,pointRadius:0,borderWidth:1.5,tension:.2})});
+  }else{
+    const d=await (await api(`/api/series_multi?server=${sel}&gran=${g}&${seriesQ(w)}`)).json();
+    start=d.start;end=d.end;
+    ds=(s.ports||[]).map(p=>{
+      const col=portColor(p.port);
+      return {label:p.name,data:(d.series[p.port]||[]).map(r=>({x:r[0],y:(r[1]+r[2])/d.bucket})),
+              borderColor:col,backgroundColor:col,fill:false,pointRadius:0,borderWidth:1.4,tension:.2}});
+  }
+  const wv=win(bwRange);
   if(speedChart)speedChart.destroy();
-  const o=chartOpts(fmtRate,d.start,d.end);o.plugins.legend.display=false;
+  const o=chartOpts(fmtRate,start??wv.start,end??wv.end);o.plugins.legend.display=false;
   speedChart=new Chart($('speedChart'),{type:'line',data:{datasets:ds},options:o});
   attachZoom(speedChart)}
 
@@ -792,6 +822,7 @@ async function refreshClients(){
   const rangeq=customStart!=null?`start=${customStart}&end=${customEnd}`:`days=${srcDays}`;
   const qs=rangeq+(clAll?'':`&server=${sel}`)+(port&&!clAll?`&port=${port}`:'');
   let d;try{d=await (await api('/api/clients?'+qs)).json()}catch(e){return}
+  CLIENTS=d.clients||[];buildChips();   // client chips join the Bandwidth panel
   const win=customStart!=null?`${dfmt(customStart,'date')} → ${dfmt(customEnd,'date')}`:`last ${srcDays}d`;
   const scope=clAll?'all servers':(port?`${s.name} · ${esc(portName(port))}`:s.name);
   $('cl-note').textContent=`${scope} · ${d.clients.length} client${d.clients.length===1?'':'s'} · ${win} — click a row to chart it`;
@@ -801,10 +832,12 @@ async function refreshClients(){
   d.clients.forEach(p=>{
     const tr=document.createElement('tr');
     tr.style.cursor='pointer';
-    tr.title='Click to chart this client in Bandwidth / Data used';
+    tr.title='Click to chart this client (in overlay mode it is added to the overlay)';
     tr.onclick=()=>{ if(p.server!==sel){sel=p.server;buildServerCards();renderPorts();updateTz();}
-      bwMulti=false;entity=p.entity;buildChips();refreshCharts();
-      toast('Charting '+p.email);window.scrollTo({top:0,behavior:'smooth'}) };
+      if(bwMulti){bwSel.has(p.entity)?bwSel.delete(p.entity):bwSel.add(p.entity);buildChips();refreshSpeed();
+                  toast((bwSel.has(p.entity)?'Added ':'Removed ')+p.email)}
+      else{entity=p.entity;buildChips();refreshCharts();toast('Charting '+p.email)}
+      window.scrollTo({top:0,behavior:'smooth'}) };
     tr.innerHTML=`<td data-label="Client"><b>${esc(p.email)}</b></td>
       <td class="mono" data-label="Port">${p.port}</td>
       <td data-label="Server" style="font-size:.8rem">${esc(p.server_name)}</td>
