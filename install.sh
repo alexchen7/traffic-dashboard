@@ -47,7 +47,8 @@ need_root() { [ "$(id -u)" = 0 ] || die "run as root"; }
 
 ask() { # ask "prompt" "default" -> REPLY  (works under `curl | bash`)
   local prompt="$1" def="${2:-}"
-  if [ -e /dev/tty ]; then
+  # /dev/tty can exist but be unopenable (cron, ssh without a tty) — test that it really opens
+  if [ -e /dev/tty ] && (exec 3</dev/tty) 2>/dev/null; then
     read -rp "$(echo -e "${C_B}?${C_N} ${prompt}${def:+ [$def]}: ")" REPLY < /dev/tty || true
   else
     REPLY=""
@@ -218,6 +219,22 @@ PYEOF
   else
     command -v nginx >/dev/null || { say "installing nginx"; apt-get install -y -qq nginx; }
     local cert="${CERT_FILE:-}" key="${KEY_FILE:-}" domain="${DOMAIN:-_}"
+    # Re-running the installer must never downgrade a real certificate to self-signed:
+    # if a previous traffic-dash.conf points at a cert that still exists, keep using it.
+    local prev=/etc/nginx/conf.d/traffic-dash.conf
+    if [ -z "$cert" ] && [ -f "$prev" ]; then
+      local pc pk pd
+      pc="$(awk '/ssl_certificate[ \t]/{gsub(/;/,"");print $2;exit}'     "$prev")"
+      pk="$(awk '/ssl_certificate_key[ \t]/{gsub(/;/,"");print $2;exit}' "$prev")"
+      pd="$(awk '/server_name[ \t]/{gsub(/;/,"");print $2;exit}'         "$prev")"
+      if [ -n "$pc" ] && [ -f "$pc" ] && [ -n "$pk" ] && [ -f "$pk" ] \
+         && [ "$pc" != /etc/traffic-dash/selfsigned.crt ]; then
+        cert="$pc"; key="$pk"
+        [ -z "${DOMAIN:-}" ] && [ -n "$pd" ] && domain="$pd"
+        ok "keeping the TLS certificate already configured: $cert"
+      fi
+    fi
+    [ -f "$prev" ] && cp "$prev" "$prev.bak-$(date +%Y%m%d-%H%M%S)"
     if [ -z "$cert" ]; then
       ask "Path to TLS fullchain.pem (empty = generate self-signed)" ""
       cert="$REPLY"
