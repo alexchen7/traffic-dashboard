@@ -9,6 +9,9 @@
   its own day of the month — see allowance_state()), and a ledger of manual
   adjustments (vendor resets / corrections) that is applied on top of the
   recorded traffic without ever changing it.
+- Usage analysis: /api/analysis hands the raw per-client daily rows to the
+  browser, which does all the statistics and drawing itself. The only state
+  kept here is the client -> user map (which x-ui clients are one person).
 - Rollups: s10 (6h fixed); m1/h1/d1 retention adjustable in Settings
   (defaults: m1 8d, h1 120d, d1 forever; 0 = keep forever).
 - Web app on 127.0.0.1:15080 behind nginx TLS (15443).
@@ -1078,6 +1081,10 @@ def import_payload(d):
                 merged = cur["servers"].get(sid) or copy.deepcopy(DEFAULT_SRV)
                 merged.update(sanitize_srv_settings(st))
                 cur["servers"][sid] = merged
+        if isinstance(imp_set.get("client_users"), dict):
+            merged_users = sanitize_client_users(cur.get("client_users"))
+            merged_users.update(sanitize_client_users(imp_set["client_users"]))
+            cur["client_users"] = merged_users
         imp_order = [x for x in (imp_set.get("order") or []) if x in SERVERS]
         cur["order"] = imp_order + [x for x in cur["order"] if x not in imp_order]
         if isinstance(imp_set.get("retention"), dict):
@@ -1144,6 +1151,42 @@ def import_payload(d):
     stats["rows"] += len(ips_rows) + len(hp_rows) + len(cl_rows)
     c.commit(); c.close()
     return stats
+
+
+# ---------------- client -> user map (usage analysis) ----------------
+# settings["client_users"] maps one x-ui client entry, "sid|port|email", to a
+# user label. Clients with the same label are analysed as one user; clients
+# without an entry fall back to their own name. The analysis itself (baselines,
+# scores, charts) runs in the browser from the raw rows of /api/analysis.
+
+CLIENT_USERS_MAX = 5000
+CLIENT_KEY_RE = re.compile(r"^[a-z0-9_]{1,40}\|\d{1,5}\|[^|\x00-\x1f]{1,64}$")
+
+
+def sanitize_client_users(raw):
+    out = {}
+    if not isinstance(raw, dict):
+        return out
+    for k, v in raw.items():
+        if len(out) >= CLIENT_USERS_MAX:
+            break
+        k = str(k)
+        name = re.sub(r"[\x00-\x1f]", " ", str(v if v is not None else "")).strip()[:40]
+        if name and CLIENT_KEY_RE.match(k):
+            out[k] = name
+    return out
+
+
+def set_client_users(mapping, replace=True):
+    """Store the client -> user map. replace=False merges into the existing one."""
+    clean = sanitize_client_users(mapping)
+    with SETTINGS_LOCK:
+        s = get_settings()
+        cur = {} if replace else sanitize_client_users(s.get("client_users"))
+        cur.update(clean)
+        s["client_users"] = cur
+        save_settings(s)
+    return cur
 
 
 # ---------------- auth ----------------
@@ -1360,6 +1403,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/periods":
             self._send(200, self.periods_api(q))
             return
+        if path == "/api/analysis":
+            self._send(200, self.analysis_api(q))
+            return
         if path == "/api/export":
             fname = time.strftime("traffic-dash-export-%Y%m%d-%H%M%S.json")
             self._send(200, export_payload(),
@@ -1481,6 +1527,14 @@ class Handler(BaseHTTPRequestHandler):
                         c.close()
                 save_settings(s)
             self._send(200, {"ok": True, "entry": entry, "adjustments": st["adjustments"]})
+            return
+        if path == "/api/client_users":
+            body = self._body_json(limit=1024 * 1024) or {}
+            if not isinstance(body.get("map"), dict):
+                self._send(400, {"error": "map must be an object of \"server|port|client\": \"user\""})
+                return
+            cur = set_client_users(body["map"], replace=True)
+            self._send(200, {"ok": True, "count": len(cur)})
             return
         if path == "/api/order":
             body = self._body_json() or {}
@@ -1762,6 +1816,30 @@ class Handler(BaseHTTPRequestHandler):
                 "reset_day": st["reset_day"],
                 "quota_bytes": st["quota_gb"] * 1024**3 if st["quota_gb"] else 0}
 
+    def analysis_api(self, q):
+        """Raw material for the in-browser usage analysis: one row per client,
+        port, server and day (bytes in+out), plus what the browser needs to line
+        the days up (each server's time zone) and to merge clients into users.
+        No statistics are computed here."""
+        try:
+            days = max(14, min(int(q.get("days", 120)), 400))
+        except ValueError:
+            days = 120
+        now = int(time.time())
+        s = get_settings()
+        c = db()
+        rows = c.execute("SELECT sid,email,port,day,din+dout FROM clients WHERE day>=? ORDER BY day",
+                         (now - days * 86400,)).fetchall()
+        c.close()
+        servers = {}
+        for sid in s["order"]:
+            st = s["servers"][sid]
+            servers[sid] = {"name": st.get("display_name") or SERVERS[sid]["name"],
+                            "tz": st.get("tz_offset", 8), "kind": SERVERS[sid]["kind"]}
+        return {"now": now, "days": days, "servers": servers,
+                "rows": [list(r) for r in rows if r[0] in servers],
+                "users": sanitize_client_users(s.get("client_users"))}
+
     def health_api(self, q):
         """Uptime per server: percentage, 96-segment strip, last incident."""
         try:
@@ -1843,8 +1921,17 @@ def cli(argv):
         print(f"imported {stats['rows']} traffic rows, {stats['servers']} server configs"
               + (f" ({stats['skipped_servers']} invalid server entries skipped)" if stats["skipped_servers"] else ""))
         print("restart the service to pick up new servers: systemctl restart traffic-dash")
+    elif cmd == "set-client-users":
+        # app.py set-client-users <map.json> [--merge]: {"server|port|client": "user", ...}
+        if len(argv) < 2:
+            sys.exit("usage: app.py set-client-users <map.json> [--merge]")
+        init_db()
+        with open(argv[1]) as f:
+            m = json.load(f)
+        cur = set_client_users(m, replace="--merge" not in argv)
+        print(f"client -> user map now has {len(cur)} entries ({len(set(cur.values()))} users)")
     else:
-        sys.exit("usage: app.py [export [file.json] | import <file.json>]")
+        sys.exit("usage: app.py [export [file.json] | import <file.json> | set-client-users <map.json> [--merge]]")
 
 
 if __name__ == "__main__":

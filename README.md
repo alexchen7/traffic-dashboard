@@ -129,6 +129,40 @@ number and marks the adjustment with ↺; the history table lists recorded
 totals and adjustments in separate columns. The log is part of the per-server
 settings and travels with export/import.
 
+## Usage analysis
+
+The **Usage analysis** panel shows whose usage has gone up or down, judged
+against each user's own history rather than by raw volume. It needs x-ui
+(3x-ui) nodes, since it works on the per-client daily totals, and at least 28
+complete days of history.
+
+Everything is computed in the browser. The server only hands over the raw
+rows (`/api/analysis`: bytes per client, port, server and day); grouping,
+baselines, scores and drawing are client-side JavaScript.
+
+- **Weekly / Daily** — compare the last 7 complete days with the 8 weeks
+  before, or yesterday with the 28 days before.
+- **Score** — usage per window goes on a log scale, log2(GB + c), with a small
+  constant c (1 GB/week) so near-zero users can't produce huge ratios. Baseline
+  = median of the earlier windows; spread = MAD-based SD of that baseline,
+  shrunk toward the typical spread across users. Fold change = now ÷ baseline;
+  σ = (now − median) ÷ spread on the log scale. A change is flagged at |σ| ≥ 2
+  and at least 1.5×, so 50 → 100 GB outranks 200 → 150 GB, and a steady user's
+  2× outranks an erratic user's 2×. "New" and "stopped" are marked separately.
+- **Five views of the same numbers** — *List + heatmap* (ranked table with a σ
+  bar, one coloured cell per earlier window and a mini chart), *List*,
+  *Volcano* (fold change against σ, dot size = volume), *Heatmap* (users ×
+  time, colour = σ) and *Dumbbell* (typical → now on a log axis with the usual
+  range). Click a user in any view for their history and the client entries
+  that make them up.
+- **Users** — one person usually has several client entries (one per server,
+  sometimes under different names). Settings → Users assigns entries to a
+  user name; entries with the same name are analysed as one. An entry without
+  an assignment follows its own name. For a bulk load, put
+  `{"server|port|client": "user", ...}` in a file and run
+  `python3 /opt/traffic-dash/app.py set-client-users map.json` (add `--merge`
+  to keep existing assignments).
+
 ## Traffic sources & node health
 
 Two analytics panels on the dashboard:

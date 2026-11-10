@@ -162,6 +162,41 @@ tr:hover td{background:var(--panel2)}
 .modal .row{display:flex;gap:10px;justify-content:flex-end;margin-top:18px}
 .modal .hint{font-size:.72rem;color:var(--muted);margin-top:4px}
 hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
+/* usage analysis: up/down colours are an Okabe-Ito pair, lighter on dark themes */
+html{--an-up:#f0803c;--an-down:#4aa3e0;--an-ns:var(--tick);--an-band:color-mix(in srgb,var(--text) 10%,transparent);--an-mid:var(--panel)}
+html[data-theme="daylight"],html[data-theme="solar"]{--an-up:#D55E00;--an-down:#0072B2}
+.an-scroll{overflow-x:auto}
+.an-scroll svg{display:block;max-width:none}
+.an-scroll svg text{font-family:Helvetica,Arial,'Segoe UI',sans-serif;fill:var(--text)}
+.an-ax{stroke:var(--text);stroke-width:.6;fill:none}
+.an-gd{stroke:var(--grid);stroke-width:1}
+.an-dash{stroke:var(--muted);stroke-width:.7;stroke-dasharray:3 3;fill:none}
+.an-t{font-size:10px;fill:var(--muted)!important}
+.an-tl{font-size:10.5px}
+.an-hit{cursor:pointer}
+.an-hit:hover .an-hl{stroke:var(--text);stroke-width:1.2}
+table.an-mv{border-collapse:collapse;width:100%;font-size:.8rem}
+table.an-mv th{font-size:.66rem;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);font-weight:600;text-align:left;padding:4px 8px;border-bottom:1px solid var(--border);white-space:nowrap}
+table.an-mv th span{text-transform:none}
+table.an-mv td{padding:3px 8px;border-bottom:1px solid var(--grid);white-space:nowrap;vertical-align:middle}
+table.an-mv tr.an-hit:hover td{background:var(--panel2)}
+table.an-mv tr.an-sel td{background:var(--chip-on-bg)}
+table.an-mv tr.an-nsr td{color:var(--muted)}
+table.an-mv td.num{text-align:right;font-variant-numeric:tabular-nums}
+table.an-mv tr.an-sep td{font-size:.66rem;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);padding-top:10px;border-bottom:1px solid var(--border)}
+.an-flag{font-size:.6rem;text-transform:uppercase;letter-spacing:.5px;font-weight:700;padding:1px 6px;border-radius:99px;border:1px solid currentColor;margin-left:6px}
+.an-up{color:var(--an-up)} .an-down{color:var(--an-down)}
+.an-legend{display:flex;gap:6px 14px;flex-wrap:wrap;font-size:.72rem;color:var(--muted);margin-top:8px;align-items:center}
+.an-legend i{display:inline-block;vertical-align:middle;margin-right:4px}
+.an-det{margin-top:14px;padding-top:12px;border-top:1px solid var(--border)}
+.an-det h3{font-size:.9rem;font-weight:650;display:inline;margin-right:8px}
+.an-how{font-size:.76rem;color:var(--muted);line-height:1.5;margin-top:12px;max-width:1000px}
+.an-how summary{cursor:pointer;color:var(--text);font-weight:600}
+.an-how b{color:var(--text)}
+.usr-t{width:100%;border-collapse:collapse;font-size:.78rem;margin-top:8px}
+.usr-t th{font-size:.64rem;padding:5px 6px}
+.usr-t td{padding:3px 6px;border-bottom:1px solid var(--grid);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px}
+.usr-t input{width:150px;padding:4px 7px;font-size:.78rem}
 /* settings window: fixed frame, section list on the left, one section visible at a time */
 .smodal{width:700px;max-width:96vw;height:min(620px,90vh);max-height:none;padding:0;display:flex;flex-direction:column;overflow:hidden}
 .m-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:16px 20px 12px;border-bottom:1px solid var(--border)}
@@ -340,6 +375,38 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
 
 <div class="panel">
   <div class="head">
+    <h2 id="an-toggle" title="Show/hide the usage analysis"
+        style="cursor:pointer;user-select:none"><span id="an-caret">&#9662;</span> &#128202; Usage analysis</h2>
+    <span class="sub" id="an-note"></span>
+    <div class="spacer"></div>
+    <div class="seg" id="an-views"></div>
+    <div class="seg" id="an-modes"></div>
+    <button onclick="openSettings('users')" title="Choose which clients count as one user">&#128101; Users</button>
+  </div>
+  <div id="an-body">
+    <div class="sub" id="an-why" style="margin:0 0 10px"></div>
+    <div class="an-scroll" id="an-view"></div>
+    <div class="an-det">
+      <h3 id="an-det-title"></h3><span class="sub" id="an-det-note"></span>
+      <div class="an-scroll" id="an-detail" style="margin-top:8px"></div>
+      <div class="sub" id="an-det-members" style="margin-top:6px"></div>
+    </div>
+    <details class="an-how"><summary>How is a change scored?</summary>
+      Everything here is computed in your browser from the recorded per-client daily totals. Each user is compared with
+      <b>their own</b> history. Usage per window (7 days, or 1 day) is put on a log scale, <i>y</i> = log<sub>2</sub>(GB + <i>c</i>),
+      where the small constant <i>c</i> (1 GB per week) keeps near-zero users from producing huge ratios.
+      Baseline = <b>median</b> of the previous 8 weeks (28 days in daily mode); spread = <b>MAD</b>-based SD of that baseline,
+      stabilised by pulling it toward the typical spread across all users, because 8 points alone are noisy.
+      <b>Fold change</b> = now &divide; baseline; <b>&sigma;</b> = (y<sub>now</sub> &minus; median) &divide; spread.
+      A change counts as significant at |&sigma;| &ge; 2 <i>and</i> at least 1.5&times;. So 50 &rarr; 100 GB outranks 200 &rarr; 150 GB,
+      and a steady user's 2&times; outranks an erratic user's 2&times;. "New" = no real usage in the baseline; "stopped" = usage fell
+      to about zero. The current, incomplete day is left out. Clients are merged into users under Settings &rarr; Users.
+    </details>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="head">
     <h2 id="cl-toggle" title="Show/hide the per-client table"
         style="cursor:pointer;user-select:none"><span id="cl-caret">&#9656;</span> &#128100; Per-client usage</h2>
     <span class="sub" id="cl-note"></span>
@@ -446,6 +513,7 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
         <button data-tab="pkgs">Data packages<span class="cnt" id="nav-pkgs"></span></button>
         <button data-tab="adjust">Adjust usage<span class="cnt" id="nav-adj"></span></button>
         <div class="grp">Dashboard</div>
+        <button data-tab="users">Users<span class="cnt" id="nav-users"></span></button>
         <button data-tab="ret">Data retention</button>
         <button data-tab="pw">Password</button>
         <button data-tab="backup">Backup</button>
@@ -498,6 +566,15 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
             <h3>Adjustment log</h3>
             <div id="adj-list"></div>
           </section>
+          <section data-tab="users">
+            <h3>Users (for the usage analysis)</h3>
+            <div class="hint">One person often has several client entries: one per server, sometimes under different names.
+              Give those entries the same user name and the analysis treats them as one user. Leave the field empty to
+              use the client's own name. Totals are for the analysis window.</div>
+            <input type="text" id="usr-filter" placeholder="Filter by client, server or user…" style="margin-top:10px">
+            <div id="usr-list"></div>
+            <datalist id="usr-dl"></datalist>
+          </section>
           <section data-tab="ret">
             <h3>Data retention (all servers)</h3>
             <div class="grid2">
@@ -539,6 +616,7 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
           <span class="sub" id="set-foot-note"></span>
           <button onclick="closeSettings()">Close</button>
           <button class="primary" data-for="server pkgs" onclick="saveSettings()">Save server settings</button>
+          <button class="primary" data-for="users" onclick="saveUsers()">Save users</button>
           <button class="primary" data-for="ret" onclick="saveRetention()">Save retention</button>
           <button class="primary" data-for="pw" onclick="changePassword()">Change password</button>
         </div>
@@ -1180,6 +1258,261 @@ function collectPkgs(){ // -> validated list, or null after showing why not
     out.push({id:p.id||'',name:(p.name||'').trim(),gb:g,reset_day:g<0?0:(+p.reset_day||0),start:p.start||'',end:p.end||''})}
   return out}
 
+/* ====================== usage analysis ======================
+   The server only hands over raw rows (/api/analysis): bytes per client, port, server and day.
+   Grouping clients into users, baselines, scores and all drawing happen here in the browser. */
+const AN_K={week:{size:7,k:8,c:1,show:12,unit:'week',per:'GB/week',now:'last 7 days',Now:'Last 7 days'},
+            day:{size:1,k:28,c:1/7,show:28,unit:'day',per:'GB/day',now:'yesterday',Now:'Yesterday'}};
+const AN_D0=4,AN_Z=2,AN_FC=Math.log2(1.5);
+const AN_VIEWS=[['listheat','List + heatmap'],['list','List'],['volcano','Volcano'],['heat','Heatmap'],['dumbbell','Dumbbell']];
+const AN_WHY={
+  listheat:'Ranked by how unusual the latest window is for each user. Bar = σ on a fixed axis; coloured cells = how far each earlier window was from that user’s norm, so you can see when a change began.',
+  list:'Ranked by how unusual the latest window is for each user. Bar = σ on a fixed axis; mini chart = baseline windows, usual range (shaded) and the latest window (coloured).',
+  volcano:'One dot per user. Right = using more, left = using less; higher = more unusual for that user. Dot size = volume. The shaded corners hold changes that are both large and out of character.',
+  heat:'Users × time; colour = how far each window was from that user’s own norm. A fresh block at the right edge is a new jump; a long run is a lasting change. Grey bar = typical volume (log scale).',
+  dumbbell:'Hollow dot = typical window, arrow = now, pale pill = the user’s usual range. Log axis, so arrow length is the ratio: 50 → 100 is longer than 200 → 150.'};
+let anRaw=null,anData=null,AR=null,anSel=null,anBusy=false;
+let anMode=localStorage.getItem('td_an_mode')==='day'?'day':'week';
+let anView=AN_VIEWS.some(v=>v[0]===localStorage.getItem('td_an_view'))?localStorage.getItem('td_an_view'):'listheat';
+let anOpen=localStorage.getItem('td_an')!=='0';
+
+const anMedian=a=>{const b=[...a].sort((x,y)=>x-y),n=b.length;return n?(n%2?b[(n-1)/2]:(b[n/2-1]+b[n/2])/2):0};
+const anG=g=>g>=100?g.toFixed(0):g>=0.995?g.toFixed(1):g>=0.01?g.toFixed(2):'0';
+const anFold=r=>r.flag==='new'?'new':r.flag==='stopped'?'stopped':(r.fold>=10?r.fold.toFixed(0):r.fold>=1?r.fold.toFixed(1):r.fold.toFixed(2))+'×';
+const anZ=z=>(z>0?'+':'−')+Math.min(99,Math.abs(z)).toFixed(1)+'σ';
+const anDay=i=>new Date(i*864e5).toLocaleDateString([],{day:'numeric',month:'short',timeZone:'UTC'});
+const anCol=r=>!r.sig?'var(--an-ns)':r.z>0?'var(--an-up)':'var(--an-down)';
+const anCls=r=>r.sig?(r.z>0?'an-up':'an-down'):'';
+const anTip=r=>`${r.name}: ${anG(r.cur)} GB ${AR.P.now} vs ${anG(r.base)} typical (${anFold(r)}, ${anZ(r.z)})`;
+
+/* raw rows -> one daily GB series per user, on calendar days of each server's own time zone */
+function anBuild(raw){
+  if(!raw||!raw.rows.length)return null;
+  const G=2**30,sv=raw.servers,di=(day,tz)=>Math.floor((day+tz*3600+43200)/86400);
+  let first=Infinity,last=Infinity;
+  new Set(raw.rows.map(r=>r[0])).forEach(sid=>{last=Math.min(last,Math.floor((raw.now+sv[sid].tz*3600)/86400)-1)});  // last complete day everywhere
+  raw.rows.forEach(r=>{first=Math.min(first,di(r[3],sv[r[0]].tz))});
+  let n=last-first+1;n-=n%7;if(n<28)return {short:true,days:Math.max(0,last-first+1)};
+  first=last-n+1;
+  // a client entry without its own assignment follows its name, when every assigned entry of
+  // that name belongs to one user (covers a changed port or a newly added server)
+  const byName={};
+  Object.entries(raw.users).forEach(([k,u])=>{const e=k.split('|').slice(2).join('|');byName[e]=e in byName&&byName[e]!==u?null:u});
+  const users={},members={};
+  raw.rows.forEach(([sid,email,port,day,b])=>{
+    const key=sid+'|'+port+'|'+email,u=raw.users[key]||byName[email]||email,i=di(day,sv[sid].tz)-first;
+    const s=users[u]||(users[u]=new Array(n).fill(0)),m=members[u]||(members[u]={});
+    const e=m[key]||(m[key]={sid,port,email,gb:0});
+    if(i>=0&&i<n){s[i]+=b/G;e.gb+=b/G}});
+  return {first,days:n,users,members}}
+
+function anAnalyse(m){
+  const P=AN_K[m],D=anData,rows=[];
+  for(const [name,s] of Object.entries(D.users)){
+    const w=[];for(let e=s.length;e-P.size>=0;e-=P.size){let t=0;for(let i=e-P.size;i<e;i++)t+=s[i];w.unshift(t)}
+    const y=w.map(x=>Math.log2(x+P.c)),st=y.map((v,j)=>{
+      const b=y.slice(Math.max(0,j-P.k),j);if(b.length<3)return null;
+      const med=anMedian(b),mad=1.4826*anMedian(b.map(q=>Math.abs(q-med)));return {med,mad,n:b.length}});
+    rows.push({name,w,y,st})}
+  const nwin=rows[0].w.length,last=nwin-1;
+  const pool=anMedian(rows.filter(r=>Math.max(...r.w)>=P.c&&r.st[last]&&r.st[last].mad>0).map(r=>r.st[last].mad))||0.75;
+  for(const r of rows){
+    r.zs=r.st.map((t,j)=>{if(!t)return null;t.s=Math.sqrt((AN_D0*pool*pool+t.n*t.mad*t.mad)/(AN_D0+t.n));return (r.y[j]-t.med)/t.s});
+    const t=r.st[last];
+    r.cur=r.w[last];r.base=Math.max(0,2**t.med-P.c);r.lfc=r.y[last]-t.med;r.z=r.zs[last];
+    r.lo=Math.max(0,2**(t.med-t.s)-P.c);r.hi=2**(t.med+t.s)-P.c;
+    r.fold=(r.cur+P.c)/(r.base+P.c);
+    r.flag=r.base<P.c/2&&r.cur>=P.c?'new':r.cur<P.c/4&&r.base>=P.c?'stopped':'';
+    r.sig=Math.abs(r.z)>=AN_Z&&Math.abs(r.lfc)>=AN_FC;
+    r.active=r.cur>=P.c||r.base>=P.c}
+  const act=rows.filter(r=>r.active);
+  return {P,rows,act,quiet:rows.length-act.length,nwin,winStart:j=>D.first+D.days-(nwin-j)*P.size}}
+
+function anZcolor(z){ // diverging with a neutral midpoint, saturating at ±4σ
+  if(z==null)return 'var(--panel2)';const t=Math.max(-1,Math.min(1,z/4));
+  return `color-mix(in srgb, ${t>0?'var(--an-up)':'var(--an-down)'} ${Math.round(Math.abs(t)*100)}%, var(--an-mid))`}
+function anSpark(r,W=132,H=24){
+  const P=AR.P,n=Math.min(r.w.length,P.k+1),w=r.w.slice(-n),mx=Math.max(...w,r.hi,P.c)*1.05,bw=W/n,yy=v=>H-Math.min(1,v/mx)*H;
+  let h=`<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><rect x="0" y="${yy(r.hi)}" width="${W-bw}" height="${Math.max(1,yy(r.lo)-yy(r.hi))}" fill="var(--an-band)"/>
+    <line x1="0" x2="${W-bw}" y1="${yy(r.base)}" y2="${yy(r.base)}" class="an-dash"/>`;
+  w.forEach((v,i)=>{const l=i===n-1;h+=`<rect x="${i*bw+.8}" y="${yy(v)}" width="${Math.max(.6,bw-1.6)}" height="${Math.max(.6,H-yy(v))}" fill="${l?anCol(r):'var(--an-ns)'}" opacity="${l?1:.75}"/>`});
+  return h+'</svg>'}
+function anStrip(r){ // one row of the heatmap, for the list + heatmap view
+  const P=AR.P,n=Math.min(P.show,AR.nwin),j0=AR.nwin-n,cw=anMode==='week'?14:7,H=16;
+  let h=`<svg width="${n*cw}" height="${H}" viewBox="0 0 ${n*cw} ${H}">`;
+  for(let j=j0;j<AR.nwin;j++){const z=r.zs[j];
+    h+=`<rect x="${(j-j0)*cw+.5}" y=".5" width="${cw-1}" height="${H-1}" fill="${anZcolor(z)}"${j===AR.nwin-1?' stroke="var(--text)" stroke-width=".8"':''}><title>${esc(r.name)} · ${P.unit} of ${anDay(AR.winStart(j))}: ${anG(r.w[j])} GB${z==null?' (not enough earlier history)':', '+anZ(z)}</title></rect>`}
+  return h+'</svg>'}
+function anZbar(r,W=150,H=16){
+  const c=W/2,sc=(W/2-2)/6,z=Math.max(-6,Math.min(6,r.z)),x=z>=0?c:c+z*sc;
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><line x1="${c-2*sc}" x2="${c-2*sc}" y1="1" y2="${H-1}" class="an-dash"/><line x1="${c+2*sc}" x2="${c+2*sc}" y1="1" y2="${H-1}" class="an-dash"/>
+    <rect x="${x}" y="4" width="${Math.max(1,Math.abs(z)*sc)}" height="${H-8}" rx="1.5" fill="${anCol(r)}"/>${Math.abs(r.z)>6?`<path d="M${z>0?W-1:1} ${H/2} l${z>0?-5:5} -4 v8z" fill="${anCol(r)}"/>`:''}
+    <line x1="${c}" x2="${c}" y1="0" y2="${H}" class="an-ax"/></svg>`}
+
+function anViewList(heat){
+  const P=AR.P,rows=[...AR.act].sort((a,b)=>Math.abs(b.z)-Math.abs(a.z)),nsig=rows.filter(r=>r.sig).length,nc=heat?8:7;
+  const n=Math.min(P.show,AR.nwin);
+  let h=`<table class="an-mv"><thead><tr><th></th><th>User</th><th style="text-align:right">Typical</th><th style="text-align:right">${P.Now}</th><th style="text-align:right">Change</th>
+    <th>Deviation from own history <span>(σ, guides at ±2)</span></th>${heat?`<th>Each of the last ${n} ${P.unit}s <span>(colour = σ, ${anDay(AR.winStart(AR.nwin-n))} → now)</span></th>`:''}<th>Last ${P.k} ${P.unit}s + now <span>(GB)</span></th></tr></thead><tbody>`;
+  const line=r=>`<tr class="an-hit ${r.sig?'':'an-nsr'} ${r.name===anSel?'an-sel':''}" data-u="${esc(r.name)}" title="${esc(anTip(r))}">
+    <td class="${anCls(r)}">${r.z>0?'▲':'▼'}</td><td><b>${esc(r.name)}</b>${r.flag?`<span class="an-flag ${r.z>0?'an-up':'an-down'}">${r.flag}</span>`:''}</td>
+    <td class="num">${anG(r.base)}</td><td class="num"><b>${anG(r.cur)}</b> GB</td><td class="num ${anCls(r)}"><b>${anFold(r)}</b></td>
+    <td><span style="display:inline-flex;align-items:center;gap:8px">${anZbar(r)}<span class="num" style="width:44px;display:inline-block;font-variant-numeric:tabular-nums">${anZ(r.z)}</span></span></td>
+    ${heat?`<td>${anStrip(r)}</td>`:''}<td>${anSpark(r)}</td></tr>`;
+  h+=`<tr class="an-sep"><td colspan="${nc}">Significant changes (${nsig})</td></tr>`+rows.filter(r=>r.sig).map(line).join('');
+  h+=`<tr class="an-sep"><td colspan="${nc}">Within normal range (${rows.length-nsig})</td></tr>`+rows.filter(r=>!r.sig).map(line).join('');
+  h+='</tbody></table>';
+  if(heat)h+=`<div class="an-legend">${anColorbar()}</div>`;
+  return h}
+function anColorbar(){
+  let b='<svg width="170" height="10" style="display:inline-block;vertical-align:middle">';for(let i=0;i<41;i++)b+=`<rect x="${i*4}" y="1" width="4.2" height="8" fill="${anZcolor((i-20)/5)}"/>`;
+  return `<span>−4σ less ${b}</svg> +4σ more</span><span><i style="width:14px;height:9px;background:var(--panel2);border:1px solid var(--border)"></i>not enough history</span><span><i style="width:14px;height:9px;border:1px solid var(--text)"></i>latest window</span>`}
+
+function anViewVolcano(){
+  const W=900,H=440,L=52,Rm=16,T=30,B=44,XM=7.2,YM=8,rows=AR.act;
+  const x=v=>L+(Math.max(-XM,Math.min(XM,v))+XM)/(2*XM)*(W-L-Rm),y=v=>H-B-Math.min(YM,v)/YM*(H-T-B);
+  const big=Math.max(...rows.map(r=>Math.max(r.cur,r.base)),1e-9),rad=r=>3+11*Math.sqrt(Math.max(r.cur,r.base)/big);
+  let h=`<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">`;
+  h+=`<rect x="${x(AN_FC)}" y="${T}" width="${x(XM)-x(AN_FC)}" height="${y(AN_Z)-T}" fill="var(--an-up)" opacity=".06"/><rect x="${L}" y="${T}" width="${x(-AN_FC)-L}" height="${y(AN_Z)-T}" fill="var(--an-down)" opacity=".06"/>`;
+  [-AN_FC,AN_FC].forEach(v=>h+=`<line x1="${x(v)}" x2="${x(v)}" y1="${T}" y2="${H-B}" class="an-dash"/>`);
+  h+=`<line x1="${L}" x2="${W-Rm}" y1="${y(AN_Z)}" y2="${y(AN_Z)}" class="an-dash"/><text x="${W-Rm-2}" y="${y(AN_Z)-4}" text-anchor="end" class="an-t">2σ</text><path d="M${L} ${T}V${H-B}H${W-Rm}" class="an-ax"/>`;
+  [[-6,'1/64×'],[-4,'1/16×'],[-2,'¼×'],[-1,'½×'],[0,'1×'],[1,'2×'],[2,'4×'],[4,'16×'],[6,'64×']].forEach(([v,l])=>h+=`<line x1="${x(v)}" x2="${x(v)}" y1="${H-B}" y2="${H-B+3}" class="an-ax"/><text x="${x(v)}" y="${H-B+14}" text-anchor="middle" class="an-t">${l}</text>`);
+  [0,2,4,6,8].forEach(v=>h+=`<line x1="${L-3}" x2="${L}" y1="${y(v)}" y2="${y(v)}" class="an-ax"/><text x="${L-6}" y="${y(v)+3}" text-anchor="end" class="an-t">${v}${v===8?'+':''}</text>`);
+  h+=`<text x="${(L+W-Rm)/2}" y="${H-8}" text-anchor="middle" class="an-tl">◀ using less   ·   Fold change, ${AR.P.now} ÷ own typical ${AR.P.unit} (log scale)   ·   using more ▶</text>
+      <text transform="translate(13 ${(T+H-B)/2}) rotate(-90)" text-anchor="middle" class="an-tl">Deviation from own history, |σ|</text>`;
+  const lab=[];
+  [...rows].sort((a,b)=>rad(b)-rad(a)).forEach(r=>{const az=Math.abs(r.z),cx=x(r.lfc),cy=y(az),rr=rad(r),clip=az>YM||Math.abs(r.lfc)>XM,sel=r.name===anSel;
+    const st=`fill="${anCol(r)}" stroke="${sel?'var(--text)':'var(--panel)'}" stroke-width="${sel?1.6:.8}"`;
+    h+=`<g class="an-hit" data-u="${esc(r.name)}"><title>${esc(anTip(r))}${clip?' (beyond the axis)':''}</title>${r.flag
+      ?`<path class="an-hl" d="M${cx} ${cy-rr} L${cx+rr} ${cy} L${cx} ${cy+rr} L${cx-rr} ${cy}Z" fill-opacity=".8" ${st}/>`
+      :`<circle class="an-hl" cx="${cx}" cy="${cy}" r="${rr}" fill-opacity="${r.sig?.8:.45}" ${st}/>`}</g>`;
+    if(r.sig||sel)lab.push({r,cx,cy,rr})});
+  lab.sort((a,b)=>a.cy-b.cy);const used=[];
+  lab.forEach(o=>{const right=o.cx<W-170;let ly=o.cy+3;const lx=right?o.cx+o.rr+4:o.cx-o.rr-4;
+    while(used.some(u=>Math.abs(u.y-ly)<11&&Math.abs(u.x-lx)<130))ly+=11;used.push({x:lx,y:ly});
+    h+=`<text x="${lx}" y="${ly}" text-anchor="${right?'start':'end'}" class="an-tl" style="pointer-events:none">${esc(o.r.name)} <tspan class="an-t">${anFold(o.r)}</tspan></text>`});
+  return h+`</svg><div class="an-legend"><span><i style="width:10px;height:10px;border-radius:50%;background:var(--an-up)"></i>significantly more</span><span><i style="width:10px;height:10px;border-radius:50%;background:var(--an-down)"></i>significantly less</span>
+    <span><i style="width:10px;height:10px;border-radius:50%;background:var(--an-ns)"></i>within normal range</span><span><i style="width:9px;height:9px;background:var(--muted);transform:rotate(45deg)"></i>new or stopped</span>
+    <span>dot size = volume</span><span>dashed = thresholds (1.5×, 2σ)</span></div>`}
+
+function anViewHeat(){
+  const P=AR.P,rows=[...AR.act].sort((a,b)=>b.z-a.z),n=Math.min(P.show,AR.nwin),j0=AR.nwin-n;
+  const cw=anMode==='week'?30:17,ch=17,NL=190,VB=70,X0=NL+VB+8,W=X0+n*cw+120,T=44,H=T+rows.length*ch+8;
+  const big=Math.max(...rows.map(r=>r.base),1),vb=r=>Math.max(1,VB*Math.log10(1+r.base)/Math.log10(1+big));
+  let h=`<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"><text x="${NL+VB}" y="${T-22}" text-anchor="end" class="an-t">typical ${P.per}</text><text x="${X0+n*cw+34}" y="${T-6}" class="an-t">${P.now}</text>`;
+  for(let j=j0;j<AR.nwin;j++){if(anMode==='week'||(AR.nwin-1-j)%7===0)
+    h+=`<text transform="translate(${X0+(j-j0)*cw+cw/2+3} ${T-6}) rotate(-45)" class="an-t">${anDay(AR.winStart(j))}</text>`}
+  rows.forEach((r,i)=>{const yy=T+i*ch;
+    h+=`<g class="an-hit" data-u="${esc(r.name)}"><rect x="0" y="${yy}" width="${W}" height="${ch}" fill="${r.name===anSel?'var(--chip-on-bg)':'transparent'}"><title>${esc(anTip(r))}</title></rect>
+      <text x="${NL-6}" y="${yy+12}" text-anchor="end" class="an-tl" ${r.sig?'font-weight="700"':''}>${esc(r.name)}</text>
+      <rect x="${NL+VB-vb(r)}" y="${yy+4}" width="${vb(r)}" height="${ch-8}" fill="var(--an-ns)"/>`;
+    for(let j=j0;j<AR.nwin;j++){const z=r.zs[j];
+      h+=`<rect x="${X0+(j-j0)*cw+.5}" y="${yy+.5}" width="${cw-1}" height="${ch-1}" fill="${anZcolor(z)}"${j===AR.nwin-1?' stroke="var(--text)" stroke-width=".8"':''}><title>${esc(r.name)} · ${P.unit} of ${anDay(AR.winStart(j))}: ${anG(r.w[j])} GB${z==null?' (not enough earlier history)':', '+anZ(z)}</title></rect>`}
+    h+=`<text x="${X0+n*cw+8}" y="${yy+12}" class="an-tl" style="fill:${anCol(r)}">${anFold(r)} <tspan class="an-t">${anZ(r.z)}</tspan></text></g>`});
+  return h+`</svg><div class="an-legend">${anColorbar()}<span>rows ordered by the latest score</span></div>`}
+
+function anViewDumbbell(){
+  const P=AR.P,rows=[...AR.act].sort((a,b)=>b.lfc-a.lfc),NL=190,Rm=120,W=900,ch=17,T=30,H=T+rows.length*ch+6;
+  const lo=anMode==='week'?0.1:0.01,hi=Math.max(...rows.map(r=>Math.max(r.cur,r.hi)),1)*1.3;
+  const x=v=>NL+(Math.log10(Math.max(lo,v))-Math.log10(lo))/(Math.log10(hi)-Math.log10(lo))*(W-NL-Rm);
+  let h=`<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">`;
+  for(let e=Math.ceil(Math.log10(lo));10**e<=hi;e++){const v=10**e;
+    h+=`<line x1="${x(v)}" x2="${x(v)}" y1="${T-4}" y2="${H-4}" class="an-gd"/>${v>lo*1.01?`<text x="${x(v)}" y="${T-9}" text-anchor="middle" class="an-t">${v} GB</text>`:''}`}
+  h+=`<text x="${NL}" y="${T-9}" text-anchor="middle" class="an-t">≈0</text><text x="${W-Rm+10}" y="${T-9}" class="an-t">change</text>`;
+  rows.forEach((r,i)=>{const yy=T+i*ch+ch/2,c=anCol(r),xb=x(r.base),xc=x(r.cur);
+    h+=`<g class="an-hit" data-u="${esc(r.name)}"><rect x="0" y="${yy-ch/2}" width="${W}" height="${ch}" fill="${r.name===anSel?'var(--chip-on-bg)':'transparent'}"><title>${esc(anTip(r))}</title></rect>
+      <text x="${NL-10}" y="${yy+3.5}" text-anchor="end" class="an-tl" ${r.sig?'font-weight="700"':''}>${esc(r.name)}</text>
+      <rect x="${x(r.lo)}" y="${yy-3.5}" width="${Math.max(1,x(r.hi)-x(r.lo))}" height="7" rx="3.5" fill="var(--an-band)"/>
+      <line x1="${xb}" x2="${xc}" y1="${yy}" y2="${yy}" stroke="${c}" stroke-width="${r.sig?2.2:1.2}"/>
+      <circle cx="${xb}" cy="${yy}" r="3.6" fill="var(--panel)" stroke="${c}" stroke-width="1.3"/>
+      <path d="M${xc+(xc>=xb?4.5:-4.5)} ${yy} l${xc>=xb?-7:7} -4.2 v8.4z" fill="${c}"/>
+      <text x="${W-Rm+10}" y="${yy+3.5}" class="an-tl" style="fill:${c}" ${r.sig?'font-weight="700"':''}>${anFold(r)} <tspan class="an-t">${anZ(r.z)}</tspan></text></g>`});
+  return h+`</svg><div class="an-legend"><span><i style="width:9px;height:9px;border-radius:50%;border:1.3px solid var(--muted)"></i>typical ${P.unit} (median of the last ${P.k})</span>
+    <span><i style="width:0;height:0;border-left:8px solid var(--muted);border-top:4.5px solid transparent;border-bottom:4.5px solid transparent"></i>${P.now}</span>
+    <span><i style="width:22px;height:7px;border-radius:4px;background:var(--an-band)"></i>usual range (±1 spread)</span><span>log axis: equal length = equal ratio</span><span>coloured and bold = significant</span></div>`}
+
+function anDetail(){
+  const r=AR.rows.find(q=>q.name===anSel);
+  if(!r){$('an-detail').innerHTML='';$('an-det-title').textContent='';$('an-det-note').textContent='';$('an-det-members').textContent='';return}
+  const P=AR.P,n=Math.min(anMode==='week'?16:56,AR.nwin),j0=AR.nwin-n,W=900,H=170,L=46,T=14,B=30,bw=(W-L-10)/n;
+  const mx=(Math.max(...r.w.slice(j0),r.hi)||1)*1.1,y=v=>H-B-v/mx*(H-T-B);
+  const bx0=L+Math.max(0,n-1-P.k)*bw,bx1=L+(n-1)*bw;
+  let h=`<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"><rect x="${bx0}" y="${y(r.hi)}" width="${bx1-bx0}" height="${Math.max(1,y(r.lo)-y(r.hi))}" fill="var(--an-band)"/>
+    <line x1="${bx0}" x2="${bx1}" y1="${y(r.base)}" y2="${y(r.base)}" class="an-dash"/>`;
+  [0,.5,1].forEach(f=>h+=`<text x="${L-6}" y="${y(mx*f/1.1)+3}" text-anchor="end" class="an-t">${anG(mx*f/1.1)}</text><line x1="${L-3}" x2="${L}" y1="${y(mx*f/1.1)}" y2="${y(mx*f/1.1)}" class="an-ax"/>`);
+  h+=`<path d="M${L} ${T}V${H-B}H${W-10}" class="an-ax"/>`;
+  for(let j=j0;j<AR.nwin;j++){const i=j-j0,l=j===AR.nwin-1,v=r.w[j];
+    h+=`<rect x="${L+i*bw+1}" y="${y(v)}" width="${Math.max(.6,bw-2)}" height="${Math.max(.6,H-B-y(v))}" fill="${l?anCol(r):'var(--an-ns)'}" opacity="${l?1:.8}"><title>${P.unit} of ${anDay(AR.winStart(j))}: ${anG(v)} GB${r.zs[j]==null?'':', '+anZ(r.zs[j])}</title></rect>`;
+    if(anMode==='week'||i%7===0||l)h+=`<text x="${L+i*bw+bw/2}" y="${H-B+13}" text-anchor="middle" class="an-t">${anDay(AR.winStart(j))}</text>`}
+  $('an-detail').innerHTML=h+'</svg>';
+  $('an-det-title').textContent=r.name;
+  $('an-det-note').textContent=`${anG(r.cur)} GB ${P.now} vs ${anG(r.base)} typical (usual range ${anG(r.lo)}–${anG(r.hi)}) · ${anFold(r)} · ${anZ(r.z)} · ${r.sig?'significant':'within normal range'}`;
+  const mem=Object.values(anData.members[r.name]||{}).sort((a,b)=>b.gb-a.gb);
+  $('an-det-members').textContent=(mem.length>1?`${mem.length} client entries count as this user: `:'Client entry: ')
+    +mem.map(m=>`${(anRaw.servers[m.sid]||{}).name||m.sid} · ${m.email} :${m.port} (${anG(m.gb)} GB)`).join('  |  ')}
+
+function anSeg(el,opts,cur,cb){el.innerHTML='';opts.forEach(([v,l])=>{const b=document.createElement('button');
+  b.textContent=l;b.className=v===cur?'on':'';b.onclick=()=>cb(v);el.appendChild(b)})}
+function renderAnalysis(){
+  anSeg($('an-views'),AN_VIEWS,anView,v=>{anView=v;localStorage.setItem('td_an_view',v);renderAnalysis()});
+  anSeg($('an-modes'),[['week','Weekly'],['day','Daily']],anMode,v=>{anMode=v;localStorage.setItem('td_an_mode',v);renderAnalysis()});
+  if(!anData||anData.short){
+    $('an-note').textContent='';$('an-why').textContent='';
+    $('an-view').innerHTML=`<div class="sub">${anData?`Only ${anData.days} complete day(s) of per-client history so far; the analysis needs at least 28.`:'No per-client data yet. It comes from x-ui (3x-ui) nodes.'}</div>`;
+    $('an-detail').innerHTML='';$('an-det-title').textContent='';$('an-det-note').textContent='';$('an-det-members').textContent='';return}
+  AR=anAnalyse(anMode);
+  if(!AR.act.length){$('an-view').innerHTML='<div class="sub">No client with enough traffic to analyse.</div>';return}
+  if(!anSel||!AR.rows.some(r=>r.name===anSel))anSel=[...AR.act].sort((a,b)=>Math.abs(b.z)-Math.abs(a.z))[0].name;
+  const P=AR.P,nsig=AR.act.filter(r=>r.sig).length;
+  $('an-note').textContent=`${anMode==='week'?'last 7 complete days vs the 8 weeks before':'yesterday vs the 28 days before'} · ${nsig} significant of ${AR.act.length} active users · ${AR.quiet} quiet hidden (< ${anG(P.c)} ${P.per}) · history ${anDay(anData.first)} – ${anDay(anData.first+anData.days-1)}`;
+  $('an-why').textContent=AN_WHY[anView];
+  $('an-view').innerHTML=anView==='volcano'?anViewVolcano():anView==='heat'?anViewHeat():anView==='dumbbell'?anViewDumbbell():anViewList(anView==='listheat');
+  anDetail()}
+$('an-view').addEventListener('click',e=>{const g=e.target.closest('[data-u]');if(g){anSel=g.dataset.u;renderAnalysis()}});
+
+async function refreshAnalysis(force){
+  if((!anOpen&&!force)||anBusy)return;
+  anBusy=true;
+  try{anRaw=await (await api('/api/analysis?days=180')).json();anData=anBuild(anRaw)}catch(e){anBusy=false;return}
+  anBusy=false;
+  if(anOpen)renderAnalysis()}
+function setAnFold(open){anOpen=open;localStorage.setItem('td_an',open?'1':'0');
+  $('an-body').style.display=open?'':'none';$('an-caret').textContent=open?'▾':'▸';
+  ['an-views','an-modes'].forEach(id=>$(id).style.display=open?'':'none');
+  if(open)(anRaw?renderAnalysis():refreshAnalysis())}
+
+/* ---------- Settings → Users: which client entries are one person ---------- */
+let usrDraft=null;
+async function renderUsers(){
+  const box=$('usr-list');
+  if(!anRaw){box.innerHTML='<div class="hint">Loading…</div>';await refreshAnalysis(true)}
+  if(!anRaw){box.innerHTML='<div class="hint">Could not load client data.</div>';return}
+  if(!usrDraft)usrDraft={...anRaw.users};
+  const ent={};
+  anRaw.rows.forEach(([sid,email,port,,b])=>{const k=sid+'|'+port+'|'+email;(ent[k]=ent[k]||{k,sid,port,email,gb:0}).gb+=b/2**30});
+  Object.keys(usrDraft).forEach(k=>{if(!ent[k]){const a=k.split('|');ent[k]={k,sid:a[0],port:+a[1],email:a.slice(2).join('|'),gb:0}}});
+  const q=$('usr-filter').value.trim().toLowerCase(),sn=sid=>(anRaw.servers[sid]||{}).name||sid;
+  const rows=Object.values(ent).filter(e=>!q||(e.email+' '+sn(e.sid)+' '+(usrDraft[e.k]||'')).toLowerCase().includes(q))
+    .sort((a,b)=>(usrDraft[a.k]||a.email).localeCompare(usrDraft[b.k]||b.email)||b.gb-a.gb);
+  $('usr-dl').innerHTML=[...new Set(Object.values(usrDraft))].sort().map(n=>`<option value="${esc(n)}">`).join('');
+  $('nav-users').textContent=new Set(Object.values(usrDraft)).size||'';
+  let h=`<table class="usr-t"><thead><tr><th>Client entry</th><th>Server</th><th>Port</th><th style="text-align:right">GB</th><th>User</th></tr></thead><tbody>`;
+  rows.forEach(e=>{h+=`<tr><td title="${esc(e.email)}"><b>${esc(e.email)}</b></td><td>${esc(sn(e.sid))}</td><td class="mono">${e.port}</td><td class="mono" style="text-align:right">${anG(e.gb)}</td>
+    <td><input type="text" list="usr-dl" maxlength="40" data-k="${esc(e.k)}" value="${esc(usrDraft[e.k]||'')}" placeholder="${esc(e.email)}"></td></tr>`});
+  box.innerHTML=h+`</tbody></table><div class="hint">${rows.length} of ${Object.keys(ent).length} client entries shown.</div>`}
+$('usr-list').addEventListener('change',e=>{const k=e.target.dataset&&e.target.dataset.k;if(!k)return;
+  const v=e.target.value.trim();if(v)usrDraft[k]=v;else delete usrDraft[k];
+  $('usr-dl').innerHTML=[...new Set(Object.values(usrDraft))].sort().map(n=>`<option value="${esc(n)}">`).join('');
+  $('nav-users').textContent=new Set(Object.values(usrDraft)).size||''});
+$('usr-filter').addEventListener('input',()=>renderUsers());
+async function saveUsers(){
+  if(!usrDraft)return;
+  const r=await api('/api/client_users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({map:usrDraft})});
+  const j=await r.json();
+  if(!r.ok){toast(j.error||'Failed');return}
+  toast(`Users saved (${j.count} client entries assigned)`);usrDraft=null;anSel=null;
+  await refreshAnalysis(true);closeSettings()}
+
 /* ---------- node health ---------- */
 async function refreshHealth(){
   let d;try{d=await (await api('/api/health?days='+hlDays)).json()}catch(e){return}
@@ -1243,6 +1576,7 @@ function setTab(t){
   $('set-title').textContent=SERVER_TABS.includes(t)&&s?`Settings — ${s.name}`:'Settings — dashboard';
   $('set-sub').textContent=SERVER_TABS.includes(t)&&s?`server id: ${s.id} · ${s.kind}`:'applies to all servers';
   if(t==='adjust')renderAdjust();
+  if(t==='users')renderUsers();
   document.querySelector('#settings-ov .m-body').scrollTop=0}
 document.querySelectorAll('#set-nav button').forEach(b=>b.addEventListener('click',()=>setTab(b.dataset.tab)));
 
@@ -1315,7 +1649,8 @@ function openSettings(what){ // what: true = new data package, 'adjust' = Adjust
   $('ret-ips').value=ret.ips;$('ret-health').value=ret.health;
   updateRetWarn();
   $('settings-ov').classList.add('show');
-  setTab(what===true?'pkgs':what==='adjust'?'adjust':'server');
+  usrDraft=null;$('usr-filter').value='';
+  setTab(what===true?'pkgs':what==='adjust'?'adjust':what==='users'?'users':'server');
   if(what===true)addPkg()}
 function closeSettings(){$('settings-ov').classList.remove('show')}
 
@@ -1384,6 +1719,8 @@ $('src-all').addEventListener('change',e=>{srcAll=e.target.checked;refreshSource
 $('cl-all').addEventListener('change',e=>{clAll=e.target.checked;refreshClients()});
 $('cl-toggle').addEventListener('click',()=>setClFold(!clOpen));   // folded by default on every load
 $('mt-toggle').addEventListener('click',()=>setMtFold(!mtOpen));setMtFold(mtOpen);   // remembered per browser
+$('an-toggle').addEventListener('click',()=>setAnFold(!anOpen));setAnFold(anOpen);
+setInterval(()=>refreshAnalysis(),600000);   // daily data: every 10 minutes is plenty
 ['ret-m1','ret-h1','ret-d1'].forEach(id=>$(id).addEventListener('input',updateRetWarn));
 applyView();
 buildSegs();
