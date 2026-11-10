@@ -49,10 +49,10 @@ select:focus,input:focus{outline:none;border-color:var(--accent)}
 /* server cards */
 .servers{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;margin-bottom:16px}
 .scard{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--border);border-radius:13px;
-  padding:14px 16px;cursor:pointer;transition:.15s;box-shadow:0 4px 16px var(--shadow)}
+  padding:12px 14px;cursor:pointer;transition:.15s;box-shadow:0 4px 16px var(--shadow);min-width:0}
 .scard:hover{border-color:var(--accent)}
 .scard.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent),0 4px 16px var(--shadow)}
-.scard .row1{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.scard .row1{display:flex;align-items:center;gap:8px;margin-bottom:6px}
 .scard .nm{font-weight:650;font-size:.92rem}
 .kind{font-size:.64rem;text-transform:uppercase;letter-spacing:.7px;padding:2px 8px;border-radius:99px;font-weight:700}
 .kind.relay{background:color-mix(in srgb,var(--accent) 22%,transparent);color:var(--accent)}
@@ -66,18 +66,36 @@ select:focus,input:focus{outline:none;border-color:var(--accent)}
 .scard.dragging{opacity:.45}
 .dot{width:8px;height:8px;border-radius:50%;margin-left:auto}
 .ok{background:var(--accent2);box-shadow:0 0 6px var(--accent2)} .bad{background:var(--danger)}
-.scard .use{font-size:1.25rem;font-weight:700}
-.scard .meta{font-size:.72rem;color:var(--muted);margin-top:2px}
+.scard .hl{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.scard .use{font-size:1.2rem;font-weight:700;white-space:nowrap}
+.scard .st{font-size:.74rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.scard .st b{color:var(--text);font-weight:650}
+.scard .st b.over{color:var(--danger)}
+/* allowance bar: one segment per pool (base quota, then each data package), width ~ size,
+   fill = used, tick = time elapsed in that pool's cycle, stripes = over quota */
+.abar{display:flex;gap:2px;height:8px;margin-top:7px}
+.abar .sg{position:relative;min-width:8px;border-radius:2px;background:color-mix(in srgb,var(--c) 20%,transparent)}
+.abar .sg.pk{border-radius:4px}
+.abar .sg i{display:block;height:100%;border-radius:inherit;background:var(--c);transition:width .5s}
+.abar .sg.over i{background:repeating-linear-gradient(135deg,var(--c) 0 4px,color-mix(in srgb,var(--c) 45%,transparent) 4px 7px)}
+.abar .sg b{position:absolute;top:-2px;bottom:-2px;width:2px;margin-left:-1px;border-radius:1px;background:var(--text);opacity:.7}
+.abar .sg.nq{background:none;border:1px dashed var(--border)}
+.lgd{font-size:.7rem;color:var(--muted);margin-top:6px;display:flex;flex-wrap:wrap;gap:1px 9px;font-variant-numeric:tabular-nums}
+.lg{white-space:nowrap}
+.lg i{display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--c);margin-right:4px}
+.lg.pk i{border-radius:50%}
+.lg em{font-style:normal;opacity:.75}
+.figkey{font-size:.68rem;color:var(--muted);margin:-8px 2px 14px;display:flex;gap:4px 14px;flex-wrap:wrap;align-items:center}
+.figkey .k-fill{width:18px;background:linear-gradient(90deg,var(--muted) 55%,color-mix(in srgb,var(--muted) 25%,transparent) 55%)}
+.figkey .k-tick{width:2px;height:11px;background:var(--text);opacity:.7;vertical-align:-2px}
+.figkey .k-over{width:18px;--c:var(--danger);background:repeating-linear-gradient(135deg,var(--c) 0 4px,color-mix(in srgb,var(--c) 45%,transparent) 4px 7px)}
 .bar{height:6px;border-radius:5px;background:var(--panel2);border:1px solid var(--border);overflow:hidden;margin-top:8px}
 .bar i{display:block;height:100%;background:linear-gradient(90deg,var(--accent2),var(--accent));transition:width .5s}
 .bar i.hot{background:linear-gradient(90deg,var(--warn),var(--danger))}
-.scard .rates{display:flex;gap:14px;margin-top:8px;font-size:.76rem}
-/* data packages: card lines, allowance rows, settings editor */
-.bar.thin{height:4px;margin-top:3px}
-.bar i.bonus{background:linear-gradient(90deg,var(--warn),var(--accent2))}
-.pk{display:flex;justify-content:space-between;gap:8px;font-size:.7rem;color:var(--muted);margin-top:7px}
-.pk .pk-n{color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.pk .pk-v{white-space:nowrap}
+.scard{display:flex;flex-direction:column}
+.scard .rates{display:flex;gap:12px;margin-top:auto;padding-top:6px;font-size:.74rem;white-space:nowrap}
+.scard .rates .rst{margin-left:auto;color:var(--muted)}
+/* data packages: allowance rows, settings editor */
 .tag{font-size:.62rem;text-transform:uppercase;letter-spacing:.5px;padding:1px 7px;border-radius:99px;font-weight:700;
   border:1px solid var(--border);color:var(--muted);margin-left:6px;white-space:nowrap}
 .tag.bonus{border-color:transparent;background:color-mix(in srgb,var(--accent2) 22%,transparent);color:var(--accent2)}
@@ -85,7 +103,7 @@ select:focus,input:focus{outline:none;border-color:var(--accent)}
 .arow.off{opacity:.55}
 .arow .a-name{width:230px;font-weight:650;font-size:.86rem}
 .arow .a-bar{flex:1;min-width:160px}
-.arow .a-bar .bar{margin-top:0}
+.arow .a-bar .abar{margin-top:0}
 .arow .a-num{width:250px;text-align:right;font-size:.8rem}
 .arow .a-meta{width:270px;text-align:right;font-size:.72rem;color:var(--muted)}
 .pkg{border:1px solid var(--border);border-radius:10px;padding:4px 10px 10px;margin-top:8px;background:var(--panel2)}
@@ -253,6 +271,13 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
 </div>
 
 <div class="servers" id="server-cards"></div>
+<div class="figkey" title="How to read the allowance bar on each server card">
+  <span class="lg" style="--c:var(--accent)"><i></i>base quota</span>
+  <span class="lg pk" style="--c:#a855f7"><i></i>data package (one colour each)</span>
+  <span class="lg"><i class="k-fill"></i>filled = used</span>
+  <span class="lg"><i class="k-tick"></i>tick = time elapsed until reset</span>
+  <span class="lg"><i class="k-over"></i>over quota</span>
+</div>
 
 <div class="panel">
   <div class="head">
@@ -545,21 +570,49 @@ function clearCustom(){exitCustom();buildSegs();refreshCharts();refreshSources()
 
 function srv(){return OV?OV.servers.find(s=>s.id===sel):null}
 
+/* ---------- allowance encoding shared by the server cards and the monthly panel ---------- */
+const PKG_COLORS=['#a855f7','#14b8a6','#ec4899','#84cc16','#eab308','#6366f1'];
+function pkgColor(a,p){ // stable per package: by its position in the saved list, not by sort order
+  const i=a.packages.filter(x=>x.kind==='bonus').findIndex(x=>x.id===p.id);
+  return PKG_COLORS[(i<0?0:i)%PKG_COLORS.length]}
+function baseColor(b){
+  if(!b.quota)return 'var(--muted)';
+  const f=b.cap?b.used/b.cap:1;
+  return f>=1?'var(--danger)':f>.85?'var(--warn)':'var(--accent)'}
+function elapsedPct(per){ // how far through its cycle a pool is (the tick on its segment)
+  return per&&per.end>per.start?Math.max(0,Math.min(100,100*(OV.now-per.start)/(per.end-per.start))):0}
+function dleft(d){return (d>=10?Math.round(d):d)+'d'}
+function fmtPair(u,c){ // used/size with as few characters as possible: "23/220 GB", "92.6 GB/1.94 TB", "1047/1000 GB"
+  const U=['B','KB','MB','GB','TB'];
+  const z=x=>parseFloat(x)>=10?String(Math.round(parseFloat(x))):x.replace(/(\.\d*?)0+$/,'$1').replace(/\.$/,'');
+  const [un,uu]=fmtB(u).split(' '),[cn,cu]=fmtB(c).split(' ');
+  if(uu===cu)return `${z(un)}/${z(cn)} ${cu}`;
+  if(U.indexOf(uu)>U.indexOf(cu))return `${(u/1024**U.indexOf(cu)).toFixed(0)}/${z(cn)} ${cu}`;
+  return `${z(un)} ${uu}/${z(cn)} ${cu}`}
+
 function buildServerCards(){
   const box=$('server-cards');box.innerHTML='';
   OV.servers.forEach(s=>{
-    // base quota is only charged for what the bonus data packages didn't absorb
-    const a=s.allowance||{base:{quota:s.quota_bytes,cap:s.quota_bytes,used:s.usage.total},packages:[],left:null};
-    const used=s.usage.total,q=a.base.quota?a.base.cap:0,hasQ=!!a.base.quota;
-    const pct=hasQ?(q?Math.min(100,100*a.base.used/q):100):0;
+    // Every card is the same five rows whatever the server has: the allowance is ONE
+    // segmented bar (base quota, then each active data package) with a one-line legend.
+    // The base quota is only charged for what the bonus packages didn't absorb.
+    const a=s.allowance||{base:{quota:s.quota_bytes,cap:s.quota_bytes,used:s.usage.total,left:Math.max(0,s.quota_bytes-s.usage.total),over:0},packages:[],left:null};
+    const b=a.base,hasQ=!!b.quota,off=+s.settings.tz_offset;
+    const bpct=hasQ?(b.cap?100*b.used/b.cap:100):0,bc=baseColor(b);
     const act=a.packages.filter(p=>p.kind==='bonus'&&p.state==='active').sort((x,y)=>x.period.end-y.period.end);
-    const extra=act.length||a.base.adjust;
-    const pkHtml=act.slice(0,3).map(p=>{const pp=p.cap?Math.min(100,100*p.used/p.cap):0;
-      return `<div class="pk"><span class="pk-n">+ ${esc(p.name||'Data package')}</span><span class="pk-v">${p.left>0?fmtB(p.left)+' left of '+fmtB(p.cap):fmtB(p.cap)+' used up'} · ${p.days_left}d</span></div>
-        <div class="bar thin"><i class="bonus" style="width:${pp}%"></i></div>`}).join('')
-      +(act.length>3?`<div class="meta">+${act.length-3} more package${act.length>4?'s':''}</div>`:'')
-      +(extra&&hasQ?(a.base.over?`<div class="meta"><b style="color:var(--danger)">${fmtB(a.base.over)}</b> over quota</div>`
-        :`<div class="meta"><b style="color:var(--text)">${fmtB(a.left)}</b> left in total</div>`):'');
+    const rst=`resets day ${s.settings.reset_day}, next ${sday(s.period.end,off)} (${s.period.days_left}d)`;
+    const bTip=hasQ?`Base quota: ${fmtB(b.used)} of ${fmtB(b.cap)} used (${bpct.toFixed(1)}%), ${b.over?fmtB(b.over)+' over':fmtB(b.left)+' left'} · ${rst}`
+                   :`No quota set: ${fmtB(b.used)} used this period · ${rst}`;
+    const segs=[hasQ?`<div class="sg${b.over?' over':''}" style="flex:${Math.max(b.cap/2**30,1)} 1 0;--c:${bc}" title="${esc(bTip)}"><i style="width:${Math.min(100,bpct)}%"></i><b style="left:${elapsedPct(s.period)}%"></b></div>`
+                    :`<div class="sg nq" style="flex:${Math.max(2*act.reduce((t,p)=>t+p.cap,0)/2**30,1)} 1 0" title="${esc(bTip)}"></div>`];
+    const lgd=[hasQ?`<span class="lg" style="--c:${bc}" title="${esc(bTip)}"><i></i>${fmtPair(b.used,b.cap)}</span>`
+                   :`<span class="lg" title="${esc(bTip)}">no quota</span>`];
+    act.forEach(p=>{
+      const c=pkgColor(a,p);
+      const tip=`${p.name||'Data package'}: ${fmtB(p.used)} of ${fmtB(p.cap)} used, ${fmtB(p.left)} left · ${p.reset_day?'own reset day '+p.reset_day:'resets with the billing period'}, next ${sday(p.period.end,off)} (${p.days_left}d)`;
+      segs.push(`<div class="sg pk" style="flex:${p.cap/2**30} 1 0;--c:${c}" title="${esc(tip)}"><i style="width:${p.cap?Math.min(100,100*p.used/p.cap):0}%"></i><b style="left:${elapsedPct(p.period)}%"></b></div>`);
+      lgd.push(`<span class="lg pk" style="--c:${c}" title="${esc(tip)}"><i></i>${fmtPair(p.used,p.cap)} <em>${dleft(p.days_left)}</em></span>`)});
+    const status=!hasQ?'':(b.over?`<b class="over">${fmtB(b.over)} over</b>`:`<b>${fmtB(a.left==null?b.left:a.left)}</b> left`)+` · ${bpct.toFixed(bpct>=100?0:1)}%`;
     const r=s.rate;
     const healthy=OV.now-s.health_last<60;
     const d=document.createElement('div');
@@ -576,11 +629,11 @@ function buildServerCards(){
     const flagHtml=cc?`<img class="flag-img" src="https://flagcdn.com/32x24/${cc}.png" srcset="https://flagcdn.com/64x48/${cc}.png 2x" alt="${esc(s.country_code)}" title="${esc(s.country)} (${esc(s.geo_ip)})" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'flag-cc',textContent:this.alt}))">`:'';
     d.innerHTML=`<div class="row1"><span class="grip" title="Drag to reorder">&#x2630;</span>${flagHtml}<span class="nm">${esc(s.name)}</span>
         <span class="kind ${s.kind}">${s.kind}</span><span class="dot ${healthy?'ok':'bad'}" title="collector"></span></div>
-      <div class="use">${fmtB(used)}</div>
-      <div class="meta">${hasQ?(extra?fmtB(a.base.used)+' of '+fmtB(q)+' base ('+pct.toFixed(1)+'%)':pct.toFixed(1)+'% of '+fmtB(q)):'no quota'} · resets day ${s.settings.reset_day} · ${s.period.days_left}d left</div>
-      ${hasQ?`<div class="bar"><i class="${pct>85?'hot':''}" style="width:${pct}%"></i></div>`:''}
-      ${pkHtml}
-      <div class="rates"><span class="down">↓ ${r?fmtRate(r.in):'–'}</span><span class="up">↑ ${r?fmtRate(r.out):'–'}</span></div>`;
+      <div class="hl"><span class="use" title="Traffic this billing period">${fmtB(s.usage.total)}</span><span class="st" title="${esc(bTip)}">${status}</span></div>
+      <div class="abar">${segs.join('')}</div>
+      <div class="lgd">${lgd.join('')}</div>
+      <div class="rates"><span class="down">↓ ${r?fmtRate(r.in):'–'}</span><span class="up">↑ ${r?fmtRate(r.out):'–'}</span>
+        <span class="rst" title="Billing period ${esc(rst)}">↻ day ${s.settings.reset_day} · ${dleft(s.period.days_left)}</span></div>`;
     box.appendChild(d)})}
 
 function dropOnServer(targetId){
@@ -943,10 +996,11 @@ function sday(ts,off,yr){ // calendar day of an epoch in the server's reset time
 function renderAllowance(){
   const s=srv();if(!s||!s.allowance)return;
   const a=s.allowance,b=a.base,off=+s.settings.tz_offset;
-  const row=(name,used,cap,num,meta,cls,bonus)=>{
+  // same encoding as the server cards: colour = pool, fill = used, tick = time elapsed, stripes = over
+  const row=(name,used,cap,num,meta,cls,color,per,pk)=>{
     const pc=cap?Math.min(100,100*used/cap):0;
-    return `<div class="arow ${cls||''}"><div class="a-name">${name}</div>
-      <div class="a-bar">${cap?`<div class="bar"><i class="${bonus?'bonus':(pc>85?'hot':'')}" style="width:${pc}%"></i></div>`:''}</div>
+    return `<div class="arow ${cls||''}"><div class="a-name">${color?`<span class="lg${pk?' pk':''}" style="--c:${color};margin-right:2px"><i></i></span>`:''}${name}</div>
+      <div class="a-bar">${cap?`<div class="abar"><div class="sg${pk?' pk':''}${used>cap?' over':''}" style="flex:1;--c:${color}"><i style="width:${pc}%"></i>${per?`<b style="left:${elapsedPct(per)}%"></b>`:''}</div></div>`:''}</div>
       <div class="a-num mono">${num}</div><div class="a-meta">${meta}</div></div>`};
   const ord={active:0,pending:1,expired:2};
   const pk=[...a.packages].sort((x,y)=>ord[x.state]-ord[y.state]||(x.kind<y.kind?-1:x.kind>y.kind?1:0)
@@ -963,10 +1017,10 @@ function renderAllowance(){
     h+=row(`${esc(p.name||'Data package')}<span class="tag bonus">bonus</span>`,p.used,p.cap,
       `${fmtB(p.used)} of ${fmtB(p.cap)} · <b>${fmtB(p.left)} left</b>`,
       `${p.reset_day?'own reset, day '+p.reset_day:'resets with billing period'} · next ${sday(p.period.end,off)} (${p.days_left}d)`
-        +(p.end?' · last day '+esc(p.end):''),'',true)});
+        +(p.end?' · last day '+esc(p.end):''),'',pkgColor(a,p),p.period,true)});
   const bmeta=`resets day ${s.settings.reset_day} · next ${sday(s.period.end,off)} (${s.period.days_left}d)`;
   if(b.quota)h+=row('Base quota'+(b.adjust?`<span class="tag">${fmtB(b.quota)} − ${fmtB(-b.adjust)}</span>`:''),b.used,b.cap,
-    `${fmtB(b.used)} of ${fmtB(b.cap)} · <b>${b.over?fmtB(b.over)+' over':fmtB(b.left)+' left'}</b>`,bmeta);
+    `${fmtB(b.used)} of ${fmtB(b.cap)} · <b>${b.over?fmtB(b.over)+' over':fmtB(b.left)+' left'}</b>`,bmeta,'',baseColor(b),s.period);
   else h+=row('Base quota',0,0,`${fmtB(b.used)} used · no quota set`,bmeta);
   $('mt-allow').innerHTML=h;
   const nact=a.packages.filter(p=>p.kind==='bonus'&&p.state==='active').length;

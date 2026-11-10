@@ -97,8 +97,15 @@ a server can have several:
   the start of the package's current cycle.
 
 Bonus data is always used up before the base quota; when several packages hold
-data, the one that resets soonest goes first. The card's bar and percentage
-then refer to the base quota only, with one line per active package below it.
+data, the one that resets soonest goes first.
+
+Every server card has the same compact layout. The allowance is one segmented
+bar: the base quota first, then one coloured segment per active package, each
+as wide as its share of the total. A segment's fill is how much of that pool is
+used, the tick on it is how far through its own cycle it is (fill left of the
+tick = under pace), and a striped fill means the base quota is exceeded. The
+legend line under the bar gives used/size per pool and, for packages, the days
+until they reset; hover a segment for the full details.
 Balances are replayed from the daily buckets, so editing a package or the reset
 day recalculates the current period immediately. Packages are part of the
 per-server settings and travel with export/import.
