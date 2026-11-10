@@ -162,6 +162,37 @@ tr:hover td{background:var(--panel2)}
 .modal .row{display:flex;gap:10px;justify-content:flex-end;margin-top:18px}
 .modal .hint{font-size:.72rem;color:var(--muted);margin-top:4px}
 hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
+/* settings window: fixed frame, section list on the left, one section visible at a time */
+.smodal{width:700px;max-width:96vw;height:min(620px,90vh);max-height:none;padding:0;display:flex;flex-direction:column;overflow:hidden}
+.m-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:16px 20px 12px;border-bottom:1px solid var(--border)}
+.m-head h2{margin-bottom:2px}
+.m-head .xbtn{font-size:1.05rem}
+.m-main{display:flex;flex:1;min-height:0}
+.m-nav{width:176px;flex:0 0 auto;border-right:1px solid var(--border);padding:8px 10px 12px;overflow:auto;background:var(--panel2)}
+.m-nav .grp{font-size:.64rem;text-transform:uppercase;letter-spacing:.7px;color:var(--muted);margin:12px 8px 5px;font-weight:700;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.m-nav button{display:flex;align-items:center;width:100%;text-align:left;border:none;background:transparent;padding:7px 10px;border-radius:8px;
+  font-size:.82rem;color:var(--text);margin-bottom:2px;transition:none}
+.m-nav button:hover{background:color-mix(in srgb,var(--accent) 12%,transparent);color:var(--text)}
+.m-nav button.on{background:var(--chip-on-bg);color:var(--chip-on-tx);font-weight:600}
+.m-nav .cnt{margin-left:auto;font-size:.66rem;color:var(--muted);font-weight:700;font-variant-numeric:tabular-nums}
+.m-pane{flex:1;min-width:0;display:flex;flex-direction:column}
+.m-body{flex:1;overflow:auto;padding:2px 22px 18px}
+.m-body section{display:none}
+.m-body section.on{display:block}
+.m-foot{display:flex;gap:10px;align-items:center;justify-content:flex-end;padding:11px 20px;border-top:1px solid var(--border)}
+.m-foot .sub{margin-right:auto;min-width:0}
+.m-foot button{white-space:nowrap;flex:0 0 auto}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}
+.kv{font-size:.82rem;margin:12px 0 4px;padding:8px 12px;border:1px solid var(--border);border-radius:10px;background:var(--panel2)}
+.kv div{display:flex;justify-content:space-between;gap:12px;padding:3px 0}
+.kv span{color:var(--muted)}
+.adjrow{display:flex;align-items:center;gap:10px;padding:7px 2px;border-bottom:1px solid var(--grid);font-size:.78rem}
+.adjrow .when{color:var(--muted);white-space:nowrap}
+.adjrow .amt{white-space:nowrap;font-weight:700}
+.adjrow .note{flex:1;min-width:0;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.adjrow .tag{margin-left:0}
+.neg{color:var(--accent2)} .pos{color:var(--warn)}
 .ret-warn{font-size:.74rem;color:var(--warn);border:1px solid var(--warn);border-radius:8px;padding:8px 10px;margin-top:8px;background:color-mix(in srgb,var(--warn) 12%,transparent)}
 .toast{position:fixed;bottom:24px;right:24px;background:var(--chip-on-bg);border:1px solid var(--accent);color:var(--chip-on-tx);
   padding:10px 18px;border-radius:10px;font-size:.85rem;opacity:0;transition:.3s;pointer-events:none;z-index:60}
@@ -204,6 +235,15 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
   .arow .a-name{width:100%}
   .arow .a-bar{flex-basis:100%;min-width:0}
   .arow .a-num,.arow .a-meta{width:100%;text-align:left}
+  /* settings: the section list becomes a scrolling strip above the content */
+  .smodal{height:92vh}
+  .m-main{flex-direction:column}
+  .m-nav{width:auto;display:flex;gap:4px;overflow-x:auto;border-right:none;border-bottom:1px solid var(--border);padding:8px 10px}
+  .m-nav .grp{display:none}
+  .m-nav button{width:auto;white-space:nowrap;margin-bottom:0;gap:6px}
+  .m-body{padding:2px 16px 16px}
+  .m-foot .sub{display:none}
+  .adjrow{flex-wrap:wrap}
 }
 /* traffic sources */
 .cgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(195px,1fr));gap:10px}
@@ -285,13 +325,14 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
         style="cursor:pointer;user-select:none"><span id="mt-caret">&#9662;</span> &#128230; Monthly traffic &amp; data packages</h2>
     <span class="sub" id="mt-note"></span>
     <div class="spacer"></div>
+    <button onclick="openSettings('adjust')" title="Vendor reset or correction: change the used traffic without touching the recorded data">&#8634; Adjust usage</button>
     <button onclick="openSettings(true)" title="Add a bonus data package (or a deduction) to this server">+ Data package</button>
   </div>
   <div id="mt-body">
     <div class="sub" id="mt-order" style="margin:0 0 4px"></div>
     <div id="mt-allow"></div>
     <table class="rtable" style="margin-top:14px">
-      <thead><tr><th>Billing period</th><th>Received &#8595;</th><th>Sent &#8593;</th><th>Total</th><th>Of base quota</th></tr></thead>
+      <thead><tr><th>Billing period</th><th>Received &#8595;</th><th>Sent &#8593;</th><th>Recorded total</th><th>Adjusted</th><th>Of base quota</th></tr></thead>
       <tbody id="mt-rows"></tbody>
     </table>
   </div>
@@ -393,66 +434,115 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
 </div>
 
 <div class="overlay" id="settings-ov">
-  <div class="modal">
-    <h2 id="set-title">Settings</h2>
-    <div class="sub" id="set-sub"></div>
-    <h3>Server</h3>
-    <label>Display name</label>
-    <input type="text" id="set-name" maxlength="48" placeholder="e.g. Tokyo Exit">
-    <div class="hint">Leave empty to restore the default name.</div>
-    <h3>Traffic period</h3>
-    <label>Monthly reset day (1–28)</label>
-    <input type="number" id="set-reset" min="1" max="28">
-    <label>Reset time zone</label>
-    <select id="set-tz"></select>
-    <div class="hint">Daily buckets and the monthly reset boundary use this zone. Reset happens at 00:00 in this zone.</div>
-    <label>Monthly quota (GB, 0 = unlimited)</label>
-    <input type="number" id="set-quota" min="0" step="10">
-    <h3 id="pkg-h">Data packages</h3>
-    <div class="hint">Extra data on top of the monthly quota (promotions, add-ons). A package is always used up
-      before the base quota. It refills with the billing period or on its own day of the month.
-      A negative size is a deduction from the base quota. Dates use the reset time zone.</div>
-    <div id="pkg-list"></div>
-    <div class="row" style="justify-content:flex-start;margin-top:10px"><button onclick="addPkg()">+ Add package</button></div>
-    <div class="row">
-      <button onclick="closeSettings()">Close</button>
-      <button class="primary" onclick="saveSettings()">Save server settings</button>
+  <div class="modal smodal">
+    <div class="m-head">
+      <div><h2 id="set-title">Settings</h2><div class="sub" id="set-sub"></div></div>
+      <button class="xbtn" onclick="closeSettings()" title="Close">&#10005;</button>
     </div>
-    <hr class="sep">
-    <h3>Dashboard password</h3>
-    <label>Current password</label>
-    <input type="password" id="pw-cur" autocomplete="current-password">
-    <label>New password (min 8 chars)</label>
-    <input type="password" id="pw-new" autocomplete="new-password">
-    <label>Confirm new password</label>
-    <input type="password" id="pw-new2" autocomplete="new-password">
-    <div class="row"><button class="primary" onclick="changePassword()">Change password</button></div>
-    <hr class="sep">
-    <h3>Data retention (all servers)</h3>
-    <label>1-minute data — keep for (days, 0 = forever)</label>
-    <input type="number" id="ret-m1" min="0" max="3650">
-    <label>1-hour data — keep for (days, 0 = forever)</label>
-    <input type="number" id="ret-h1" min="0" max="3650">
-    <label>Daily data — keep for (days, 0 = forever)</label>
-    <input type="number" id="ret-d1" min="0" max="3650">
-    <label>Per-source-IP data — keep for (days, 0 = forever)</label>
-    <input type="number" id="ret-ips" min="0" max="3650">
-    <label>Uptime history — keep for (days, 0 = forever)</label>
-    <input type="number" id="ret-health" min="0" max="3650">
-    <div class="hint">Applies within ~5 minutes. Lowering a value permanently deletes older rows.
-      Rough cost: 1-min data ≈ 43 MB per port/host per year; 1-hour ≈ 0.7 MB; daily ≈ 0.03 MB.</div>
-    <div class="ret-warn" id="ret-warn" style="display:none"></div>
-    <div class="row"><button class="primary" onclick="saveRetention()">Save retention</button></div>
-    <hr class="sep">
-    <h3>Backup &amp; migration</h3>
-    <div class="hint">Export covers all servers: traffic history, per-server settings and registered
-      node configs. Password, secret and SSH keys are not included. Import merges — matching
-      servers/buckets are overwritten by the file, everything else is kept.</div>
-    <div class="row" style="justify-content:flex-start">
-      <button onclick="exportData()">&#8595; Export data</button>
-      <button onclick="$('imp-file').click()">&#8593; Import data&hellip;</button>
-      <input type="file" id="imp-file" accept=".json,application/json" style="display:none"
-             onchange="importData(this.files[0])">
+    <div class="m-main">
+      <nav class="m-nav" id="set-nav">
+        <div class="grp" id="nav-srv">This server</div>
+        <button data-tab="server">Server &amp; quota</button>
+        <button data-tab="pkgs">Data packages<span class="cnt" id="nav-pkgs"></span></button>
+        <button data-tab="adjust">Adjust usage<span class="cnt" id="nav-adj"></span></button>
+        <div class="grp">Dashboard</div>
+        <button data-tab="ret">Data retention</button>
+        <button data-tab="pw">Password</button>
+        <button data-tab="backup">Backup</button>
+      </nav>
+      <div class="m-pane">
+        <div class="m-body">
+          <section data-tab="server">
+            <h3>Server</h3>
+            <label>Display name</label>
+            <input type="text" id="set-name" maxlength="48" placeholder="e.g. Tokyo Exit">
+            <div class="hint">Leave empty to restore the default name.</div>
+            <h3>Traffic period</h3>
+            <div class="grid2">
+              <div><label>Monthly reset day (1–28)</label>
+                <input type="number" id="set-reset" min="1" max="28"></div>
+              <div><label>Monthly quota (GB, 0 = unlimited)</label>
+                <input type="number" id="set-quota" min="0" step="10"></div>
+            </div>
+            <label>Reset time zone</label>
+            <select id="set-tz"></select>
+            <div class="hint">Daily buckets and the monthly reset boundary use this zone. Reset happens at 00:00 in this zone.</div>
+          </section>
+          <section data-tab="pkgs">
+            <h3>Data packages</h3>
+            <div class="hint">Extra data on top of the monthly quota (promotions, add-ons). A package is always used up
+              before the base quota. It refills with the billing period or on its own day of the month.
+              A negative size is a deduction from the base quota. Dates use the reset time zone.</div>
+            <div id="pkg-list"></div>
+            <div class="row" style="justify-content:flex-start;margin-top:10px"><button onclick="addPkg()">+ Add package</button></div>
+          </section>
+          <section data-tab="adjust">
+            <h3>Adjust used traffic</h3>
+            <div class="hint">For when the vendor resets or corrects your usage. Recorded traffic, charts and history are
+              never changed: each adjustment is kept in the log below and can be removed again.</div>
+            <div class="kv" id="adj-now"></div>
+            <label>Action</label>
+            <select id="adj-mode">
+              <option value="full">Full reset — used traffic back to 0</option>
+              <option value="set">Set used traffic to…</option>
+              <option value="delta">Change used traffic by…</option>
+            </select>
+            <div id="adj-gb-wrap"><label id="adj-gb-lbl">Amount (GB)</label>
+              <input type="number" id="adj-gb" step="any"></div>
+            <label>Note (optional)</label>
+            <input type="text" id="adj-note" maxlength="60" placeholder="e.g. vendor reset after the outage">
+            <div class="hint" id="adj-preview"></div>
+            <div class="row" style="justify-content:flex-start;margin-top:12px"><button class="primary" onclick="applyAdjust()">Apply adjustment</button></div>
+            <div class="hint">Applies from now. Data that is given back goes to the base quota first, then to data
+              packages; an increase is used like traffic (packages first).</div>
+            <h3>Adjustment log</h3>
+            <div id="adj-list"></div>
+          </section>
+          <section data-tab="ret">
+            <h3>Data retention (all servers)</h3>
+            <div class="grid2">
+              <div><label>1-minute data (days)</label><input type="number" id="ret-m1" min="0" max="3650"></div>
+              <div><label>1-hour data (days)</label><input type="number" id="ret-h1" min="0" max="3650"></div>
+              <div><label>Daily data (days)</label><input type="number" id="ret-d1" min="0" max="3650"></div>
+              <div><label>Per-source-IP data (days)</label><input type="number" id="ret-ips" min="0" max="3650"></div>
+              <div><label>Uptime history (days)</label><input type="number" id="ret-health" min="0" max="3650"></div>
+            </div>
+            <div class="hint">How long each kind of data is kept; 0 = forever. Applies within ~5 minutes. Lowering a
+              value permanently deletes older rows. Rough cost: 1-min data ≈ 43 MB per port/host per year;
+              1-hour ≈ 0.7 MB; daily ≈ 0.03 MB.</div>
+            <div class="ret-warn" id="ret-warn" style="display:none"></div>
+          </section>
+          <section data-tab="pw">
+            <h3>Dashboard password</h3>
+            <label>Current password</label>
+            <input type="password" id="pw-cur" autocomplete="current-password">
+            <label>New password (min 8 chars)</label>
+            <input type="password" id="pw-new" autocomplete="new-password">
+            <label>Confirm new password</label>
+            <input type="password" id="pw-new2" autocomplete="new-password">
+            <div class="hint">Changing the password signs out every other browser.</div>
+          </section>
+          <section data-tab="backup">
+            <h3>Backup &amp; migration</h3>
+            <div class="hint">Export covers all servers: traffic history, per-server settings (including data packages
+              and adjustments) and registered node configs. Password, secret and SSH keys are not included.
+              Import merges — matching servers/buckets are overwritten by the file, everything else is kept.</div>
+            <div class="row" style="justify-content:flex-start">
+              <button onclick="exportData()">&#8595; Export data</button>
+              <button onclick="$('imp-file').click()">&#8593; Import data&hellip;</button>
+              <input type="file" id="imp-file" accept=".json,application/json" style="display:none"
+                     onchange="importData(this.files[0])">
+            </div>
+          </section>
+        </div>
+        <div class="m-foot" id="set-foot">
+          <span class="sub" id="set-foot-note"></span>
+          <button onclick="closeSettings()">Close</button>
+          <button class="primary" data-for="server pkgs" onclick="saveSettings()">Save server settings</button>
+          <button class="primary" data-for="ret" onclick="saveRetention()">Save retention</button>
+          <button class="primary" data-for="pw" onclick="changePassword()">Change password</button>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -612,6 +702,7 @@ function buildServerCards(){
       const tip=`${p.name||'Data package'}: ${fmtB(p.used)} of ${fmtB(p.cap)} used, ${fmtB(p.left)} left · ${p.reset_day?'own reset day '+p.reset_day:'resets with the billing period'}, next ${sday(p.period.end,off)} (${p.days_left}d)`;
       segs.push(`<div class="sg pk" style="flex:${p.cap/2**30} 1 0;--c:${c}" title="${esc(tip)}"><i style="width:${p.cap?Math.min(100,100*p.used/p.cap):0}%"></i><b style="left:${elapsedPct(p.period)}%"></b></div>`);
       lgd.push(`<span class="lg pk" style="--c:${c}" title="${esc(tip)}"><i></i>${fmtPair(p.used,p.cap)} <em>${dleft(p.days_left)}</em></span>`)});
+    if(a.adjusted)lgd.push(`<span class="lg" title="Manual adjustments this period: ${fmtSigned(a.adjusted)} in ${a.adjust_count} entr${a.adjust_count===1?'y':'ies'}. The big number is recorded traffic and is not changed by them.">&#8634; ${fmtSigned(a.adjusted)}</span>`);
     const status=!hasQ?'':(b.over?`<b class="over">${fmtB(b.over)} over</b>`:`<b>${fmtB(a.left==null?b.left:a.left)}</b> left`)+` · ${bpct.toFixed(bpct>=100?0:1)}%`;
     const r=s.rate;
     const healthy=OV.now-s.health_last<60;
@@ -629,7 +720,7 @@ function buildServerCards(){
     const flagHtml=cc?`<img class="flag-img" src="https://flagcdn.com/32x24/${cc}.png" srcset="https://flagcdn.com/64x48/${cc}.png 2x" alt="${esc(s.country_code)}" title="${esc(s.country)} (${esc(s.geo_ip)})" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'flag-cc',textContent:this.alt}))">`:'';
     d.innerHTML=`<div class="row1"><span class="grip" title="Drag to reorder">&#x2630;</span>${flagHtml}<span class="nm">${esc(s.name)}</span>
         <span class="kind ${s.kind}">${s.kind}</span><span class="dot ${healthy?'ok':'bad'}" title="collector"></span></div>
-      <div class="hl"><span class="use" title="Traffic this billing period">${fmtB(s.usage.total)}</span><span class="st" title="${esc(bTip)}">${status}</span></div>
+      <div class="hl"><span class="use" title="Recorded traffic this billing period">${fmtB(s.usage.total)}</span><span class="st" title="${esc(bTip)}">${status}</span></div>
       <div class="abar">${segs.join('')}</div>
       <div class="lgd">${lgd.join('')}</div>
       <div class="rates"><span class="down">↓ ${r?fmtRate(r.in):'–'}</span><span class="up">↑ ${r?fmtRate(r.out):'–'}</span>
@@ -1022,6 +1113,10 @@ function renderAllowance(){
   if(b.quota)h+=row('Base quota'+(b.adjust?`<span class="tag">${fmtB(b.quota)} − ${fmtB(-b.adjust)}</span>`:''),b.used,b.cap,
     `${fmtB(b.used)} of ${fmtB(b.cap)} · <b>${b.over?fmtB(b.over)+' over':fmtB(b.left)+' left'}</b>`,bmeta,'',baseColor(b),s.period);
   else h+=row('Base quota',0,0,`${fmtB(b.used)} used · no quota set`,bmeta);
+  if(a.adjust_count)h+=`<div class="arow"><div class="a-name">&#8634; Adjustments<span class="tag">${a.adjust_count}</span></div>
+      <div class="a-bar sub">recorded ${fmtB(s.usage.total)} → counted as used ${fmtB(a.counted)}</div>
+      <div class="a-num mono"><b class="${a.adjusted<0?'neg':'pos'}">${fmtSigned(a.adjusted)}</b> this period</div>
+      <div class="a-meta">manual, kept apart from recorded traffic</div></div>`;
   $('mt-allow').innerHTML=h;
   const nact=a.packages.filter(p=>p.kind==='bonus'&&p.state==='active').length;
   $('mt-order').textContent=nact?'Used in this order: data packages first (soonest reset first), then the base quota.':'';
@@ -1037,12 +1132,13 @@ async function refreshPeriods(){
   const thisYear=new Date((Date.now()/1000+off*3600)*1000).getUTCFullYear();
   d.periods.forEach(p=>{
     const yr=new Date((p.start+off*3600)*1000).getUTCFullYear()!==thisYear;
-    const pc=q?100*p.total/q:0;
+    const pc=q?100*Math.max(0,p.total+(p.adjusted||0))/q:0;   // net of manual adjustments
     const tr=document.createElement('tr');
     tr.innerHTML=`<td data-label="Billing period">${sday(p.start,off,yr)} – ${sday(p.end-86400,off,yr)}${p.current?'<span class="tag bonus">current</span>':''}${p.partial?'<span class="tag" title="Recording started during this period">partial</span>':''}</td>
       <td class="mono down" data-label="Received ↓">${fmtB(p.in)}</td><td class="mono up" data-label="Sent ↑">${fmtB(p.out)}</td>
-      <td class="mono" data-label="Total"><b>${fmtB(p.total)}</b></td>
-      <td data-label="Of base quota">${q?`<span class="pctbar"><i style="width:${Math.min(100,pc)}%"></i></span><span class="mono" style="color:var(--muted);font-size:.76rem">${pc.toFixed(1)}%</span>`:'<span class="sub">no quota</span>'}</td>`;
+      <td class="mono" data-label="Recorded total"><b>${fmtB(p.total)}</b></td>
+      <td class="mono${p.adjusted?(p.adjusted<0?' neg':' pos'):''}" data-label="Adjusted"${p.adjusted?' title="Manual adjustments made in this period (not part of the recorded total)"':''}>${p.adjusted?fmtSigned(p.adjusted):'–'}</td>
+      <td data-label="Of base quota"${p.adjusted?' title="Recorded total plus adjustments, as a share of the base quota"':''}>${q?`<span class="pctbar"><i style="width:${Math.min(100,pc)}%"></i></span><span class="mono" style="color:var(--muted);font-size:.76rem">${pc.toFixed(1)}%</span>`:'<span class="sub">no quota</span>'}</td>`;
     tb.appendChild(tr)})}
 
 /* package editor (Settings) — pkgDraft is saved together with the server settings */
@@ -1050,6 +1146,7 @@ let pkgDraft=[];
 function srvToday(){const s=srv();return new Date((OV.now+(+s.settings.tz_offset)*3600)*1000).toISOString().slice(0,10)}
 function renderPkgs(){
   const box=$('pkg-list');box.innerHTML='';
+  $('nav-pkgs').textContent=pkgDraft.length||'';
   if(!pkgDraft.length){box.innerHTML='<div class="hint">No packages on this server.</div>';return}
   let opts='<option value="0">With billing period</option>';
   for(let d=1;d<=31;d++)opts+=`<option value="${d}">Own day: ${d}</option>`;
@@ -1132,10 +1229,76 @@ async function loadOverview(rebuild=true){
   if(!sel){sel=OV.servers[0].id;entity=sel}
   renderAll(rebuild)}
 
-function openSettings(newPkg){
-  const s=srv();$('set-title').textContent=`Settings — ${s.name}`;
+/* ---------- settings window ---------- */
+let setTabCur='server';
+const SERVER_TABS=['server','pkgs','adjust'];
+function setTab(t){
+  setTabCur=t;
+  document.querySelectorAll('#set-nav button').forEach(b=>b.classList.toggle('on',b.dataset.tab===t));
+  document.querySelectorAll('#settings-ov section').forEach(x=>x.classList.toggle('on',x.dataset.tab===t));
+  document.querySelectorAll('#set-foot [data-for]').forEach(b=>{b.style.display=b.dataset.for.split(' ').includes(t)?'':'none'});
+  $('set-foot-note').textContent=t==='server'||t==='pkgs'?'Server & quota and Data packages are saved together.'
+    :t==='adjust'?'Adjustments apply immediately.':'';
+  const s=srv();
+  $('set-title').textContent=SERVER_TABS.includes(t)&&s?`Settings — ${s.name}`:'Settings — dashboard';
+  $('set-sub').textContent=SERVER_TABS.includes(t)&&s?`server id: ${s.id} · ${s.kind}`:'applies to all servers';
+  if(t==='adjust')renderAdjust();
+  document.querySelector('#settings-ov .m-body').scrollTop=0}
+document.querySelectorAll('#set-nav button').forEach(b=>b.addEventListener('click',()=>setTab(b.dataset.tab)));
+
+function fmtSigned(b){return (b<0?'−':'+')+fmtB(Math.abs(b))}
+const ADJ_KIND={full:'full reset',set:'set to value',delta:'change'};
+function renderAdjust(){
+  const s=srv();if(!s)return;const a=s.allowance,list=[...(s.settings.adjustments||[])].sort((x,y)=>y.ts-x.ts);
+  $('nav-adj').textContent=list.length||'';
+  const nb=a.packages.some(p=>p.kind==='bonus'&&p.state==='active');
+  $('adj-now').innerHTML=`<div><span>Recorded this period</span><b class="mono">${fmtB(s.usage.total)}</b></div>
+    <div><span>Adjustments this period</span><b class="mono ${a.adjusted<0?'neg':a.adjusted>0?'pos':''}">${a.adjusted?fmtSigned(a.adjusted):'none'}</b></div>
+    <div><span>Counted as used${nb?` (base ${fmtB(a.base.used)} + packages ${fmtB(a.bonus.used)})`:''}</span><b class="mono">${fmtB(a.counted)}</b></div>`;
+  adjPreview();
+  const box=$('adj-list');box.innerHTML='';
+  if(!list.length){box.innerHTML='<div class="hint">No adjustments on this server.</div>';return}
+  list.forEach(x=>{
+    const el=document.createElement('div');el.className='adjrow';
+    const inPeriod=x.ts>=s.period.start;
+    el.innerHTML=`<span class="when mono">${dfmt(x.ts,'full')}</span><span class="tag">${ADJ_KIND[x.kind]||'change'}</span>
+      <span class="amt mono ${x.bytes<0?'neg':'pos'}">${fmtSigned(x.bytes)}</span>
+      <span class="note" title="${esc(x.note)}">${esc(x.note)}${inPeriod?'':' (earlier period)'}</span>
+      <button class="xbtn" title="Remove this adjustment (undo it)">✕</button>`;
+    el.querySelector('.xbtn').onclick=()=>removeAdjust(x.id);
+    box.appendChild(el)})}
+function adjPreview(){
+  const s=srv();if(!s)return;
+  const cur=s.allowance.counted,mode=$('adj-mode').value,g=parseFloat($('adj-gb').value);
+  $('adj-gb-wrap').style.display=mode==='full'?'none':'';
+  $('adj-gb-lbl').textContent=mode==='set'?'Used traffic should be (GB) — e.g. the figure in the vendor’s panel'
+    :'Change by (GB) — negative gives data back, positive adds';
+  let to=null;
+  if(mode==='full')to=0;else if(!isNaN(g))to=mode==='set'?Math.max(0,g)*2**30:Math.max(0,cur+g*2**30);
+  $('adj-preview').textContent=to==null?'':Math.round(to)===cur?'No change: used traffic is already at that value.'
+    :`Counted as used goes from ${fmtB(cur)} to ${fmtB(to)} (${fmtSigned(to-cur)}).`}
+async function postAdjust(body){
+  const r=await api('/api/adjust',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({server:sel,...body})});
+  const j=await r.json();
+  if(!r.ok){toast(j.error||'Failed');return null}
+  await loadOverview(false);renderAdjust();refreshPeriods();return j}
+async function applyAdjust(){
+  const mode=$('adj-mode').value,body={mode,note:$('adj-note').value};
+  if(mode!=='full'){const g=parseFloat($('adj-gb').value);if(isNaN(g)){toast('Enter an amount in GB');return}body.gb=g}
+  const j=await postAdjust(body);if(!j)return;
+  $('adj-gb').value='';$('adj-note').value='';adjPreview();
+  toast('Adjustment applied: '+fmtSigned(j.entry.bytes))}
+async function removeAdjust(id){
+  if(!confirm('Remove this adjustment? Used traffic goes back to what it would be without it.'))return;
+  if(await postAdjust({remove:id}))toast('Adjustment removed')}
+['adj-mode','adj-gb'].forEach(id=>$(id).addEventListener('input',adjPreview));
+
+function openSettings(what){ // what: true = new data package, 'adjust' = Adjust usage tab, else Server & quota
+  const s=srv();
   pkgDraft=(s.settings.packages||[]).map(p=>({...p}));renderPkgs();
-  $('set-sub').textContent=`server id: ${s.id} · ${s.kind}`;
+  $('nav-srv').textContent=s.name;$('nav-srv').title='These three sections apply to '+s.name;
+  $('nav-adj').textContent=(s.settings.adjustments||[]).length||'';
+  $('adj-mode').value='full';$('adj-gb').value='';$('adj-note').value='';
   $('set-name').value=s.settings.display_name||'';
   $('set-name').placeholder=s.default_name||'display name';
   $('set-reset').value=s.settings.reset_day;
@@ -1152,7 +1315,8 @@ function openSettings(newPkg){
   $('ret-ips').value=ret.ips;$('ret-health').value=ret.health;
   updateRetWarn();
   $('settings-ov').classList.add('show');
-  if(newPkg===true){$('pkg-h').scrollIntoView();addPkg()}}
+  setTab(what===true?'pkgs':what==='adjust'?'adjust':'server');
+  if(what===true)addPkg()}
 function closeSettings(){$('settings-ov').classList.remove('show')}
 
 /* warn when a finite retention is set on a rollup tier the linked archive isn't shipping */

@@ -6,7 +6,9 @@
 - Per-server settings: quota, reset day, timezone offset, port names,
   monitored-port include/exclude, data packages (bonus allowances that are
   used up before the base quota; each resets with the billing period or on
-  its own day of the month — see allowance_state()).
+  its own day of the month — see allowance_state()), and a ledger of manual
+  adjustments (vendor resets / corrections) that is applied on top of the
+  recorded traffic without ever changing it.
 - Rollups: s10 (6h fixed); m1/h1/d1 retention adjustable in Settings
   (defaults: m1 8d, h1 120d, d1 forever; 0 = keep forever).
 - Web app on 127.0.0.1:15080 behind nginx TLS (15443).
@@ -39,7 +41,7 @@ SERVERS = {s["id"]: s for s in CFG["servers"]}
 
 DEFAULT_SRV = {"reset_day": 1, "quota_gb": 0, "tz_offset": 8,
                "port_names": {}, "ports_include": [], "ports_exclude": [],
-               "packages": []}
+               "packages": [], "adjustments": []}
 
 # days each tier is kept; 0 = forever (s10 is fixed at 6 hours).
 # ips = per-source-IP daily buckets, health = per-minute uptime samples.
@@ -300,6 +302,8 @@ def sanitize_srv_settings(raw):
             out[key] = _port_list(raw[key])
     if isinstance(raw.get("packages"), list):
         out["packages"] = sanitize_packages(raw["packages"])
+    if isinstance(raw.get("adjustments"), list):
+        out["adjustments"] = sanitize_adjustments(raw["adjustments"])
     return out
 
 
@@ -586,26 +590,59 @@ def allowance_state(c, entity, st, now=None):
             pl["cs"], pl["ce"], pl["rem"] = cs, ce, pl["cap"]
 
     t0 = S - PKG_LOOKBACK_DAYS * 86400 if pools else S
-    rows = c.execute("SELECT ts, din+dout FROM d1 WHERE entity=? AND ts>=? AND ts<? ORDER BY ts",
-                     (entity, t0, E)).fetchall()
-    base_used = 0
-    for ts, tot in rows:
-        left = tot
+    # Two kinds of events, replayed in time order: recorded traffic (one bucket per
+    # day) and manual adjustments (the ledger in st["adjustments"], never mixed
+    # into the recorded data). An adjustment sorts after the bucket of its own
+    # day; that is exact because a reset is stored as the amount that was in use
+    # at that moment, so whatever the day adds after it stays counted.
+    events = [(ts, 0, tot) for ts, tot in c.execute(
+        "SELECT ts, din+dout FROM d1 WHERE entity=? AND ts>=? AND ts<? ORDER BY ts", (entity, t0, E))]
+    adjusted = adj_count = 0
+    for x in st.get("adjustments") or []:
+        try:
+            ats, ab = int(x["ts"]), int(x["bytes"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if ab and t0 <= ats <= now:
+            events.append((ats, 1, ab))
+            if ats >= S:
+                adjusted += ab
+                adj_count += 1
+    events.sort()
+
+    base = {"start": None, "used": 0}
+
+    def base_roll(ts):      # the base quota starts from zero in every billing period
+        bs = period_bounds(rday, tz, ts)[0]
+        if bs != base["start"]:
+            base["start"], base["used"] = bs, 0
+
+    for ts, _, amount in events:
+        base_roll(ts)
         live = []
         for pl in pools:
             if (pl["a0"] is None or ts >= pl["a0"]) and (pl["a1"] is None or ts < pl["a1"]):
                 roll(pl, ts)
-                if pl["rem"] > 0:
-                    live.append(pl)
+                live.append(pl)
         live.sort(key=lambda pl: min(pl["ce"], pl["a1"] or pl["ce"]))
-        for pl in live:
-            take = min(left, pl["rem"])
-            pl["rem"] -= take
-            left -= take
-            if left <= 0:
-                break
-        if ts >= S:
-            base_used += left
+        if amount >= 0:     # traffic (or an upward adjustment): packages first, then base
+            left = amount
+            for pl in live:
+                take = min(left, pl["rem"])
+                pl["rem"] -= take
+                left -= take
+            base["used"] += left
+        else:               # a reset / reduction gives data back in the reverse order
+            back = -amount
+            take = min(back, base["used"])
+            base["used"] -= take
+            back -= take
+            for pl in reversed(live):
+                take = min(back, pl["cap"] - pl["rem"])
+                pl["rem"] += take
+                back -= take
+    base_roll(now)
+    base_used = base["used"]
 
     bonus_cap = bonus_left = 0
     for pl in pools:
@@ -627,7 +664,78 @@ def allowance_state(c, entity, st, now=None):
                      "over": max(0, base_used - cap) if quota else 0},
             "packages": infos,
             "bonus": {"cap": bonus_cap, "left": bonus_left, "used": bonus_cap - bonus_left},
+            # what counts against the allowance right now, after adjustments
+            "counted": base_used + bonus_cap - bonus_left,
+            # sum of this billing period's manual adjustments (negative = given back)
+            "adjusted": adjusted, "adjust_count": adj_count,
             "left": (base_left + bonus_left) if quota else None}
+
+
+# ---------------- manual adjustments (vendor resets / corrections) ----------------
+# st["adjustments"] is a ledger of {"id", "ts", "bytes", "kind", "note"}; bytes < 0
+# gives used data back, bytes > 0 adds to it. The recorded traffic (d1 and the
+# other rollups) is never touched: allowance_state() applies the ledger on top
+# of it, so removing an entry undoes it exactly.
+
+ADJ_MAX = 200
+ADJ_MAX_BYTES = int(PKG_MAX_GB * GB)
+
+
+def sanitize_adjustments(raw):
+    """Validate an adjustment ledger from an untrusted source (import)."""
+    out, seen = [], set()
+    if not isinstance(raw, list):
+        return out
+    for x in raw:
+        if not isinstance(x, dict):
+            continue
+        try:
+            ts, b = int(x.get("ts")), int(x.get("bytes"))
+        except (TypeError, ValueError):
+            continue
+        if ts <= 0 or not b or abs(b) > ADJ_MAX_BYTES:
+            continue
+        aid = str(x.get("id") or "")
+        if not re.fullmatch(r"[A-Za-z0-9]{1,16}", aid) or aid in seen:
+            aid = secrets.token_hex(4)
+        seen.add(aid)
+        kind = x.get("kind") if x.get("kind") in ("full", "set", "delta") else "delta"
+        out.append({"id": aid, "ts": ts, "bytes": b, "kind": kind,
+                    "note": str(x.get("note") or "").strip()[:60]})
+    out.sort(key=lambda a: a["ts"])
+    return out[-ADJ_MAX:]
+
+
+def add_adjustment(c, sid, st, mode, gb, note, now=None):
+    """Append one ledger entry to st. mode: 'full' (used -> 0), 'set' (used -> gb)
+    or 'delta' (used += gb). A reset is stored as the amount in use right now, so
+    it stays exact however the rest of the day's traffic is bucketed.
+    Returns the new entry; raises ValueError with a user-facing message."""
+    now = int(now or time.time())
+    if mode not in ("full", "set", "delta"):
+        raise ValueError("unknown adjustment type")
+    counted = allowance_state(c, sid, st, now)["counted"]
+    if mode == "full":
+        delta = -counted
+    else:
+        try:
+            gb = float(gb)
+        except (TypeError, ValueError):
+            raise ValueError("enter an amount in GB")
+        if gb != gb or abs(gb) > PKG_MAX_GB:
+            raise ValueError("amount out of range")
+        if mode == "set":
+            if gb < 0:
+                raise ValueError("used traffic can't be set below 0")
+            delta = int(gb * GB) - counted
+        else:
+            delta = max(int(gb * GB), -counted)     # can't give back more than is in use
+    if not delta:
+        raise ValueError("nothing to adjust — used traffic is already at that value")
+    entry = {"id": secrets.token_hex(4), "ts": now, "bytes": delta, "kind": mode,
+             "note": str(note or "").strip()[:60]}
+    st["adjustments"] = (list(st.get("adjustments") or []) + [entry])[-ADJ_MAX:]
+    return entry
 
 
 def geo_ip_for(srv):
@@ -1344,6 +1452,36 @@ class Handler(BaseHTTPRequestHandler):
                 save_settings(s)
             self._send(200, {"ok": True, "settings": st})
             return
+        if path == "/api/adjust":
+            # manual correction of the used traffic (vendor reset etc.): adds to /
+            # removes from the per-server ledger; recorded traffic is untouched
+            body = self._body_json() or {}
+            sid = body.get("server")
+            if sid not in SERVERS:
+                self._send(400, {"error": "unknown server"})
+                return
+            with SETTINGS_LOCK:
+                s = get_settings()
+                st = s["servers"][sid]
+                if "remove" in body:
+                    keep = [a for a in st.get("adjustments") or [] if a.get("id") != body["remove"]]
+                    if len(keep) == len(st.get("adjustments") or []):
+                        self._send(404, {"error": "no such adjustment"})
+                        return
+                    st["adjustments"] = keep
+                    entry = None
+                else:
+                    c = db()
+                    try:
+                        entry = add_adjustment(c, sid, st, body.get("mode"), body.get("gb"), body.get("note"))
+                    except ValueError as e:
+                        self._send(400, {"error": str(e)})
+                        return
+                    finally:
+                        c.close()
+                save_settings(s)
+            self._send(200, {"ok": True, "entry": entry, "adjustments": st["adjustments"]})
+            return
         if path == "/api/order":
             body = self._body_json() or {}
             order = body.get("order")
@@ -1608,8 +1746,15 @@ class Handler(BaseHTTPRequestHandler):
             if i and (first is None or end <= first):
                 break       # older than the first recorded day
             pin, pout = usage_between(c, sid, start, end)
+            adj = 0     # manual adjustments made in this period, reported next to the recorded totals
+            for a in st.get("adjustments") or []:
+                try:
+                    if start <= int(a["ts"]) < end:
+                        adj += int(a["bytes"])
+                except (TypeError, ValueError, KeyError):
+                    pass
             out.append({"start": start, "end": end, "in": pin, "out": pout,
-                        "total": pin + pout, "current": i == 0,
+                        "total": pin + pout, "adjusted": adj, "current": i == 0,
                         "partial": first is not None and start < first < end})
             t = start - 1
         c.close()

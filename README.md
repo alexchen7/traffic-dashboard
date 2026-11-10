@@ -110,6 +110,25 @@ Balances are replayed from the daily buckets, so editing a package or the reset
 day recalculates the current period immediately. Packages are part of the
 per-server settings and travel with export/import.
 
+### Adjusting used traffic (vendor resets)
+
+When a vendor resets or corrects your usage, record it in Settings → Adjust
+usage (or "Adjust usage" in the panel):
+
+- **Full reset** — used traffic goes back to 0 (base quota and packages).
+- **Set used traffic to…** — e.g. the figure shown in the vendor's panel.
+- **Change used traffic by…** — negative gives data back, positive adds.
+
+Adjustments never change the recorded traffic. They are kept as a separate
+log per server (time, amount, note) and applied on top of the recorded data
+when the allowance is calculated, so charts and history stay as measured and
+removing a log entry undoes it exactly. Data that is given back goes to the
+base quota first, then to data packages; an increase is used like traffic
+(packages first). The server card keeps showing recorded traffic as its big
+number and marks the adjustment with ↺; the history table lists recorded
+totals and adjustments in separate columns. The log is part of the per-server
+settings and travels with export/import.
+
 ## Traffic sources & node health
 
 Two analytics panels on the dashboard:
