@@ -4,7 +4,9 @@
 - Collector samples every 10s from all servers in config.json (parallel threads,
   SQLite writes serialized in the collector thread).
 - Per-server settings: quota, reset day, timezone offset, port names,
-  monitored-port include/exclude.
+  monitored-port include/exclude, data packages (bonus allowances that are
+  used up before the base quota; each resets with the billing period or on
+  its own day of the month — see allowance_state()).
 - Rollups: s10 (6h fixed); m1/h1/d1 retention adjustable in Settings
   (defaults: m1 8d, h1 120d, d1 forever; 0 = keep forever).
 - Web app on 127.0.0.1:15080 behind nginx TLS (15443).
@@ -36,7 +38,8 @@ LISTEN = (CFG.get("listen_host", "127.0.0.1"), int(CFG.get("listen_port", 15080)
 SERVERS = {s["id"]: s for s in CFG["servers"]}
 
 DEFAULT_SRV = {"reset_day": 1, "quota_gb": 0, "tz_offset": 8,
-               "port_names": {}, "ports_include": [], "ports_exclude": []}
+               "port_names": {}, "ports_include": [], "ports_exclude": [],
+               "packages": []}
 
 # days each tier is kept; 0 = forever (s10 is fixed at 6 hours).
 # ips = per-source-IP daily buckets, health = per-minute uptime samples.
@@ -295,6 +298,8 @@ def sanitize_srv_settings(raw):
     for key in ("ports_include", "ports_exclude"):
         if isinstance(raw.get(key), list):
             out[key] = _port_list(raw[key])
+    if isinstance(raw.get("packages"), list):
+        out["packages"] = sanitize_packages(raw["packages"])
     return out
 
 
@@ -447,7 +452,7 @@ def period_bounds(reset_day, tzoff, now=None):
     now = now or time.time()
     lt = time.gmtime(now + tzoff * 3600)
     y, m, d = lt.tm_year, lt.tm_mon, lt.tm_mday
-    if d >= reset_day:
+    if d >= clamp_day(y, m, reset_day):    # day 29-31 falls on the last day of shorter months
         sy, sm = y, m
     else:
         sy, sm = (y - 1, 12) if m == 1 else (y, m - 1)
@@ -461,6 +466,168 @@ def usage_between(c, entity, start, end):
     row = c.execute("SELECT COALESCE(SUM(din),0), COALESCE(SUM(dout),0) FROM d1 WHERE entity=? AND ts>=? AND ts<?",
                     (entity, start, end)).fetchone()
     return row[0], row[1]
+
+
+# ---------------- data packages (bonus allowances) ----------------
+# A server's monthly allowance = base quota (resets on reset_day) plus any
+# number of data packages. A package is
+#   {"id", "name", "gb", "reset_day", "start", "end"}
+#   gb > 0     a bonus pool, ALWAYS used up before the base quota. It refills
+#              either with the billing period (reset_day 0) or on its own day
+#              of the month (reset_day 1-31; short months clamp to the last day).
+#   gb < 0     a deduction from the base quota (always follows the billing period).
+#   start/end  optional "YYYY-MM-DD" in the server's time zone: first and last
+#              day the package is valid ("" = no limit).
+# When several pools hold data, the one that resets soonest is drained first.
+
+GB = 1024 ** 3
+PKG_MAX = 24
+PKG_MAX_GB = 1e7
+# How far back the replay starts. A pool's balance only depends on traffic since
+# its own last refill, but which pool absorbed a given day depends on the others'
+# balances, so replay a few cycles to let that settle.
+PKG_LOOKBACK_DAYS = 190
+
+
+def _pkg_date(v):
+    """'YYYY-MM-DD' if v is a real calendar date, else ''."""
+    v = str(v or "").strip()
+    m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", v)
+    if not m:
+        return ""
+    y, mo, d = (int(x) for x in m.groups())
+    if not (2000 <= y <= 2100 and 1 <= mo <= 12 and 1 <= d <= calendar.monthrange(y, mo)[1]):
+        return ""
+    return v
+
+
+def sanitize_packages(raw):
+    """Validate a package list from an untrusted source (API body / import)."""
+    out, seen = [], set()
+    if not isinstance(raw, list):
+        return out
+    for p in raw:
+        if len(out) >= PKG_MAX:
+            break
+        if not isinstance(p, dict):
+            continue
+        try:
+            gb = float(p.get("gb"))
+        except (TypeError, ValueError):
+            continue
+        if gb != gb or gb == 0 or abs(gb) > PKG_MAX_GB:    # NaN / empty / absurd
+            continue
+        try:
+            rd = int(p.get("reset_day") or 0)
+        except (TypeError, ValueError):
+            rd = 0
+        if not 0 <= rd <= 31 or gb < 0:
+            rd = 0
+        pid = str(p.get("id") or "")
+        if not re.fullmatch(r"[A-Za-z0-9]{1,16}", pid) or pid in seen:
+            pid = secrets.token_hex(4)
+        seen.add(pid)
+        start, end = _pkg_date(p.get("start")), _pkg_date(p.get("end"))
+        if start and end and end < start:
+            end = ""
+        out.append({"id": pid, "name": str(p.get("name") or "").strip()[:40],
+                    "gb": round(gb, 3), "reset_day": rd, "start": start, "end": end})
+    return out
+
+
+def _day_epoch(datestr, tzoff):
+    y, m, d = (int(x) for x in datestr.split("-"))
+    return int(calendar.timegm((y, m, d, 0, 0, 0)) - tzoff * 3600)
+
+
+def allowance_state(c, entity, st, now=None):
+    """Where the current billing period stands for one server: traffic charged
+    to the base quota, and the balance of every data package.
+
+    Replays the daily buckets in time order: each day's traffic drains the bonus
+    pools that are valid that day (soonest reset first); only the remainder is
+    charged to the base quota. Reset boundaries are midnights in the server's
+    time zone, which is also how the daily buckets are cut, so daily resolution
+    is exact."""
+    now = int(now or time.time())
+    tz = st.get("tz_offset", 8)
+    rday = st.get("reset_day", 1)
+    S, E = period_bounds(rday, tz, now)
+    quota = int(float(st.get("quota_gb") or 0) * GB)
+
+    pools, infos, adjust = [], [], 0
+    for p in st.get("packages") or []:
+        try:
+            size = int(float(p.get("gb") or 0) * GB)
+            rd = int(p.get("reset_day") or 0)
+            a0 = _day_epoch(p["start"], tz) if p.get("start") else None
+            a1 = _day_epoch(p["end"], tz) + 86400 if p.get("end") else None
+        except (TypeError, ValueError, KeyError, AttributeError):
+            continue
+        if not size:
+            continue
+        state = ("expired" if a1 is not None and now >= a1 else
+                 "pending" if a0 is not None and now < a0 else "active")
+        info = {"id": p.get("id", ""), "name": p.get("name", ""), "gb": p.get("gb"),
+                "reset_day": rd, "start": p.get("start", ""), "end": p.get("end", ""),
+                "state": state, "kind": "bonus" if size > 0 else "deduction",
+                "cap": size, "used": 0, "left": 0, "period": None, "days_left": None}
+        infos.append(info)
+        if size < 0:
+            if state == "active":
+                adjust += size
+        else:   # expired pools stay in the replay: they absorbed traffic while valid
+            pools.append({"cap": size, "rd": rd or rday, "a0": a0, "a1": a1,
+                          "rem": size, "cs": None, "ce": None, "info": info})
+
+    def roll(pl, ts):       # refill when ts falls into a new cycle of this pool
+        cs, ce = period_bounds(pl["rd"], tz, ts)
+        if cs != pl["cs"]:
+            pl["cs"], pl["ce"], pl["rem"] = cs, ce, pl["cap"]
+
+    t0 = S - PKG_LOOKBACK_DAYS * 86400 if pools else S
+    rows = c.execute("SELECT ts, din+dout FROM d1 WHERE entity=? AND ts>=? AND ts<? ORDER BY ts",
+                     (entity, t0, E)).fetchall()
+    base_used = 0
+    for ts, tot in rows:
+        left = tot
+        live = []
+        for pl in pools:
+            if (pl["a0"] is None or ts >= pl["a0"]) and (pl["a1"] is None or ts < pl["a1"]):
+                roll(pl, ts)
+                if pl["rem"] > 0:
+                    live.append(pl)
+        live.sort(key=lambda pl: min(pl["ce"], pl["a1"] or pl["ce"]))
+        for pl in live:
+            take = min(left, pl["rem"])
+            pl["rem"] -= take
+            left -= take
+            if left <= 0:
+                break
+        if ts >= S:
+            base_used += left
+
+    bonus_cap = bonus_left = 0
+    for pl in pools:
+        info = pl["info"]
+        if info["state"] != "active":
+            continue
+        roll(pl, now)
+        end = min(pl["ce"], pl["a1"] or pl["ce"])
+        info.update(used=pl["cap"] - pl["rem"], left=pl["rem"],
+                    period={"start": pl["cs"], "end": end},
+                    days_left=max(0, round((end - now) / 86400, 1)))
+        bonus_cap += pl["cap"]
+        bonus_left += pl["rem"]
+
+    cap = max(0, quota + adjust) if quota else 0
+    base_left = max(0, cap - base_used) if quota else None
+    return {"base": {"quota": quota, "adjust": adjust if quota else 0, "cap": cap,
+                     "used": base_used, "left": base_left,
+                     "over": max(0, base_used - cap) if quota else 0},
+            "packages": infos,
+            "bonus": {"cap": bonus_cap, "left": bonus_left, "used": bonus_cap - bonus_left},
+            "left": (base_left + bonus_left) if quota else None}
 
 
 def geo_ip_for(srv):
@@ -1082,6 +1249,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/clients":
             self._send(200, self.clients_api(q))
             return
+        if path == "/api/periods":
+            self._send(200, self.periods_api(q))
+            return
         if path == "/api/export":
             fname = time.strftime("traffic-dash-export-%Y%m%d-%H%M%S.json")
             self._send(200, export_payload(),
@@ -1169,6 +1339,8 @@ class Handler(BaseHTTPRequestHandler):
                     if key in body and isinstance(body[key], list):
                         st[key] = sorted({int(p) for p in body[key]
                                           if str(p).isdigit() and 1 <= int(p) <= 65535})
+                if "packages" in body and isinstance(body["packages"], list):
+                    st["packages"] = sanitize_packages(body["packages"])
                 save_settings(s)
             self._send(200, {"ok": True, "settings": st})
             return
@@ -1259,6 +1431,7 @@ class Handler(BaseHTTPRequestHandler):
                 "geo_ip": gip or "",
                 "usage": {"in": hin, "out": hout, "total": hin + hout},
                 "quota_bytes": st["quota_gb"] * 1024**3 if st["quota_gb"] else 0,
+                "allowance": allowance_state(c, sid, st, now),
                 "settings": st, "tz_label": tz_label(st["tz_offset"]),
                 "period": {"start": start, "end": end, "days_left": max(0, round((end - now) / 86400, 1))},
                 "ports": plist,
@@ -1414,6 +1587,35 @@ class Handler(BaseHTTPRequestHandler):
         return {"days": days, "server": sid or "all", "port": port,
                 "custom": bool(custom), "start": since, "end": until,
                 "total": sum(r[3] + r[4] for r in rows), "clients": out}
+
+    def periods_api(self, q):
+        """Monthly traffic: totals for the current and previous billing periods
+        of one server (newest first), cut by its current reset day/time zone."""
+        sid = q.get("server", "")
+        if sid not in SERVERS:
+            return {"error": "unknown server"}
+        try:
+            n = max(1, min(int(q.get("n", 12)), 60))
+        except ValueError:
+            n = 12
+        st = get_settings()["servers"][sid]
+        c = db()
+        first = c.execute("SELECT MIN(ts) FROM d1 WHERE entity=?", (sid,)).fetchone()[0]
+        out = []
+        t = time.time()
+        for i in range(n):
+            start, end = period_bounds(st["reset_day"], st["tz_offset"], t)
+            if i and (first is None or end <= first):
+                break       # older than the first recorded day
+            pin, pout = usage_between(c, sid, start, end)
+            out.append({"start": start, "end": end, "in": pin, "out": pout,
+                        "total": pin + pout, "current": i == 0,
+                        "partial": first is not None and start < first < end})
+            t = start - 1
+        c.close()
+        return {"server": sid, "periods": out, "tz_offset": st["tz_offset"],
+                "reset_day": st["reset_day"],
+                "quota_bytes": st["quota_gb"] * 1024**3 if st["quota_gb"] else 0}
 
     def health_api(self, q):
         """Uptime per server: percentage, 96-segment strip, last incident."""

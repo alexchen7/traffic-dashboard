@@ -76,6 +76,33 @@ either copy `/root/.ssh/id_ed25519` from the old host or run
 import, restart the service (`systemctl restart traffic-dash`) if new nodes
 don't start reporting on their own.
 
+## Monthly traffic & data packages
+
+Each server card counts traffic for the current billing period (reset day and
+time zone are per server). The **Monthly traffic & data packages** panel shows
+how that period stands and lists the totals of previous periods.
+
+Vendors often add promotional data on top of the plan. Model each one as a
+**data package** (Settings → Data packages, or "+ Data package" in the panel);
+a server can have several:
+
+- **Size (GB)** — a positive size is bonus data. A negative size is a deduction
+  from the base quota.
+- **Resets** — *With billing period* (it simply adds to the monthly allowance),
+  or *Own day* 1–31 for promotions that refill on their own date. Day 29–31
+  falls on the last day of shorter months.
+- **Valid from / Last valid day** (optional) — for a package bought mid-cycle or
+  a promotion that ends. New packages default to "valid from today", so traffic
+  from before the purchase doesn't eat into them; clear the date to count from
+  the start of the package's current cycle.
+
+Bonus data is always used up before the base quota; when several packages hold
+data, the one that resets soonest goes first. The card's bar and percentage
+then refer to the base quota only, with one line per active package below it.
+Balances are replayed from the daily buckets, so editing a package or the reset
+day recalculates the current period immediately. Packages are part of the
+per-server settings and travel with export/import.
+
 ## Traffic sources & node health
 
 Two analytics panels on the dashboard:

@@ -43,7 +43,7 @@ button:hover{border-color:var(--accent);color:var(--accent)}
 button.primary{background:linear-gradient(135deg,var(--btn-grad1),var(--btn-grad2));border:none;color:#fff}
 button.primary:hover{filter:brightness(1.12);color:#fff}
 button.danger:hover{border-color:var(--danger);color:var(--danger)}
-select,input[type=number],input[type=text],input[type=password]{background:var(--panel2);color:var(--text);
+select,input[type=number],input[type=text],input[type=password],input[type=date]{background:var(--panel2);color:var(--text);
   border:1px solid var(--border);border-radius:8px;padding:6px 9px;font-size:.8rem}
 select:focus,input:focus{outline:none;border-color:var(--accent)}
 /* server cards */
@@ -72,6 +72,27 @@ select:focus,input:focus{outline:none;border-color:var(--accent)}
 .bar i{display:block;height:100%;background:linear-gradient(90deg,var(--accent2),var(--accent));transition:width .5s}
 .bar i.hot{background:linear-gradient(90deg,var(--warn),var(--danger))}
 .scard .rates{display:flex;gap:14px;margin-top:8px;font-size:.76rem}
+/* data packages: card lines, allowance rows, settings editor */
+.bar.thin{height:4px;margin-top:3px}
+.bar i.bonus{background:linear-gradient(90deg,var(--warn),var(--accent2))}
+.pk{display:flex;justify-content:space-between;gap:8px;font-size:.7rem;color:var(--muted);margin-top:7px}
+.pk .pk-n{color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pk .pk-v{white-space:nowrap}
+.tag{font-size:.62rem;text-transform:uppercase;letter-spacing:.5px;padding:1px 7px;border-radius:99px;font-weight:700;
+  border:1px solid var(--border);color:var(--muted);margin-left:6px;white-space:nowrap}
+.tag.bonus{border-color:transparent;background:color-mix(in srgb,var(--accent2) 22%,transparent);color:var(--accent2)}
+.arow{display:flex;align-items:center;gap:14px;padding:10px 4px;border-bottom:1px solid var(--grid);flex-wrap:wrap}
+.arow.off{opacity:.55}
+.arow .a-name{width:230px;font-weight:650;font-size:.86rem}
+.arow .a-bar{flex:1;min-width:160px}
+.arow .a-bar .bar{margin-top:0}
+.arow .a-num{width:250px;text-align:right;font-size:.8rem}
+.arow .a-meta{width:270px;text-align:right;font-size:.72rem;color:var(--muted)}
+.pkg{border:1px solid var(--border);border-radius:10px;padding:4px 10px 10px;margin-top:8px;background:var(--panel2)}
+.pkg .pkg-r{display:flex;gap:8px;align-items:flex-end}
+.pkg .pkg-r>div{flex:1;min-width:0}
+.pkg label{margin:8px 0 3px}
+.pkg input,.pkg select{background:var(--panel)}
 .up{color:var(--accent2)} .down{color:var(--accent)}
 /* panels */
 .panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:18px;margin-bottom:16px;box-shadow:0 4px 16px var(--shadow)}
@@ -115,7 +136,7 @@ tr:hover td{background:var(--panel2)}
 /* modal */
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:50}
 .overlay.show{display:flex}
-.modal{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:24px;width:380px;max-height:88vh;overflow:auto}
+.modal{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:24px;width:400px;max-width:94vw;max-height:88vh;overflow:auto}
 .modal h2{font-size:1rem;margin-bottom:6px}
 .modal h3{font-size:.8rem;color:var(--muted);margin:18px 0 4px;text-transform:uppercase;letter-spacing:.6px}
 .modal label{display:block;font-size:.78rem;color:var(--muted);margin:10px 0 4px}
@@ -160,6 +181,11 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
   .hpct{width:auto;flex:0 0 auto;margin-left:auto}
   .hstrip{flex-basis:100%;min-width:0;order:3;height:20px}
   .hmeta{width:100%;text-align:left;order:4}
+  /* allowance rows stack */
+  .arow{gap:6px 10px}
+  .arow .a-name{width:100%}
+  .arow .a-bar{flex-basis:100%;min-width:0}
+  .arow .a-num,.arow .a-meta{width:100%;text-align:left}
 }
 /* traffic sources */
 .cgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(195px,1fr));gap:10px}
@@ -227,6 +253,24 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
 </div>
 
 <div class="servers" id="server-cards"></div>
+
+<div class="panel">
+  <div class="head">
+    <h2 id="mt-toggle" title="Show/hide monthly traffic and data packages"
+        style="cursor:pointer;user-select:none"><span id="mt-caret">&#9662;</span> &#128230; Monthly traffic &amp; data packages</h2>
+    <span class="sub" id="mt-note"></span>
+    <div class="spacer"></div>
+    <button onclick="openSettings(true)" title="Add a bonus data package (or a deduction) to this server">+ Data package</button>
+  </div>
+  <div id="mt-body">
+    <div class="sub" id="mt-order" style="margin:0 0 4px"></div>
+    <div id="mt-allow"></div>
+    <table class="rtable" style="margin-top:14px">
+      <thead><tr><th>Billing period</th><th>Received &#8595;</th><th>Sent &#8593;</th><th>Total</th><th>Of base quota</th></tr></thead>
+      <tbody id="mt-rows"></tbody>
+    </table>
+  </div>
+</div>
 
 <div class="panel">
   <div class="head">
@@ -339,6 +383,12 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:18px 0}
     <div class="hint">Daily buckets and the monthly reset boundary use this zone. Reset happens at 00:00 in this zone.</div>
     <label>Monthly quota (GB, 0 = unlimited)</label>
     <input type="number" id="set-quota" min="0" step="10">
+    <h3 id="pkg-h">Data packages</h3>
+    <div class="hint">Extra data on top of the monthly quota (promotions, add-ons). A package is always used up
+      before the base quota. It refills with the billing period or on its own day of the month.
+      A negative size is a deduction from the base quota. Dates use the reset time zone.</div>
+    <div id="pkg-list"></div>
+    <div class="row" style="justify-content:flex-start;margin-top:10px"><button onclick="addPkg()">+ Add package</button></div>
     <div class="row">
       <button onclick="closeSettings()">Close</button>
       <button class="primary" onclick="saveSettings()">Save server settings</button>
@@ -498,8 +548,18 @@ function srv(){return OV?OV.servers.find(s=>s.id===sel):null}
 function buildServerCards(){
   const box=$('server-cards');box.innerHTML='';
   OV.servers.forEach(s=>{
-    const used=s.usage.total,q=s.quota_bytes;
-    const pct=q?Math.min(100,100*used/q):0;
+    // base quota is only charged for what the bonus data packages didn't absorb
+    const a=s.allowance||{base:{quota:s.quota_bytes,cap:s.quota_bytes,used:s.usage.total},packages:[],left:null};
+    const used=s.usage.total,q=a.base.quota?a.base.cap:0,hasQ=!!a.base.quota;
+    const pct=hasQ?(q?Math.min(100,100*a.base.used/q):100):0;
+    const act=a.packages.filter(p=>p.kind==='bonus'&&p.state==='active').sort((x,y)=>x.period.end-y.period.end);
+    const extra=act.length||a.base.adjust;
+    const pkHtml=act.slice(0,3).map(p=>{const pp=p.cap?Math.min(100,100*p.used/p.cap):0;
+      return `<div class="pk"><span class="pk-n">+ ${esc(p.name||'Data package')}</span><span class="pk-v">${p.left>0?fmtB(p.left)+' left of '+fmtB(p.cap):fmtB(p.cap)+' used up'} · ${p.days_left}d</span></div>
+        <div class="bar thin"><i class="bonus" style="width:${pp}%"></i></div>`}).join('')
+      +(act.length>3?`<div class="meta">+${act.length-3} more package${act.length>4?'s':''}</div>`:'')
+      +(extra&&hasQ?(a.base.over?`<div class="meta"><b style="color:var(--danger)">${fmtB(a.base.over)}</b> over quota</div>`
+        :`<div class="meta"><b style="color:var(--text)">${fmtB(a.left)}</b> left in total</div>`):'');
     const r=s.rate;
     const healthy=OV.now-s.health_last<60;
     const d=document.createElement('div');
@@ -511,14 +571,15 @@ function buildServerCards(){
     d.addEventListener('dragover',e=>{if(dragId&&dragId!==s.id){e.preventDefault();d.classList.add('drag-over')}});
     d.addEventListener('dragleave',()=>d.classList.remove('drag-over'));
     d.addEventListener('drop',e=>{e.preventDefault();d.classList.remove('drag-over');dropOnServer(s.id)});
-    d.onclick=()=>{sel=s.id;entity=s.id;bwMulti=false;bwSel.clear();buildServerCards();buildChips();refreshCharts();renderPorts();updateTz();refreshSources();refreshClients()};
+    d.onclick=()=>{sel=s.id;entity=s.id;bwMulti=false;bwSel.clear();buildServerCards();buildChips();refreshCharts();renderPorts();updateTz();renderAllowance();refreshPeriods();refreshSources();refreshClients()};
     const cc=(s.country_code||'').toLowerCase();
     const flagHtml=cc?`<img class="flag-img" src="https://flagcdn.com/32x24/${cc}.png" srcset="https://flagcdn.com/64x48/${cc}.png 2x" alt="${esc(s.country_code)}" title="${esc(s.country)} (${esc(s.geo_ip)})" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'flag-cc',textContent:this.alt}))">`:'';
     d.innerHTML=`<div class="row1"><span class="grip" title="Drag to reorder">&#x2630;</span>${flagHtml}<span class="nm">${esc(s.name)}</span>
         <span class="kind ${s.kind}">${s.kind}</span><span class="dot ${healthy?'ok':'bad'}" title="collector"></span></div>
       <div class="use">${fmtB(used)}</div>
-      <div class="meta">${q?pct.toFixed(1)+'% of '+fmtB(q):'no quota'} · resets day ${s.settings.reset_day} · ${s.period.days_left}d left</div>
-      ${q?`<div class="bar"><i class="${pct>85?'hot':''}" style="width:${pct}%"></i></div>`:''}
+      <div class="meta">${hasQ?(extra?fmtB(a.base.used)+' of '+fmtB(q)+' base ('+pct.toFixed(1)+'%)':pct.toFixed(1)+'% of '+fmtB(q)):'no quota'} · resets day ${s.settings.reset_day} · ${s.period.days_left}d left</div>
+      ${hasQ?`<div class="bar"><i class="${pct>85?'hot':''}" style="width:${pct}%"></i></div>`:''}
+      ${pkHtml}
       <div class="rates"><span class="down">↓ ${r?fmtRate(r.in):'–'}</span><span class="up">↑ ${r?fmtRate(r.out):'–'}</span></div>`;
     box.appendChild(d)})}
 
@@ -704,7 +765,7 @@ function hexRgb(h){h=h.replace('#','');if(h.length===3)h=h.split('').map(c=>c+c)
 
 function refreshCharts(){refreshSpeed();refreshUsage()}
 function rebuildCharts(){refreshCharts()}
-function refreshExtras(){refreshSources();refreshClients();refreshHealth()}
+function refreshExtras(){refreshSources();refreshClients();refreshHealth();refreshPeriods()}
 
 function portRate(sid,p){const r=OV.rates[`${sid}:port:${p.port}`];return r?(r.in||0)+(r.out||0):-1}
 function sortPorts(sid,list){
@@ -855,7 +916,7 @@ async function refreshClients(){
     const tr=document.createElement('tr');
     tr.style.cursor='pointer';
     tr.title='Click to chart this client (in overlay mode it is added to the overlay)';
-    tr.onclick=()=>{ if(p.server!==sel){sel=p.server;buildServerCards();renderPorts();updateTz();}
+    tr.onclick=()=>{ if(p.server!==sel){sel=p.server;buildServerCards();renderPorts();updateTz();renderAllowance();refreshPeriods();}
       if(bwMulti){bwSel.has(p.entity)?bwSel.delete(p.entity):bwSel.add(p.entity);buildChips();refreshSpeed();
                   toast((bwSel.has(p.entity)?'Added ':'Removed ')+p.email)}
       else{entity=p.entity;buildChips();refreshCharts();toast('Charting '+p.email)}
@@ -868,6 +929,105 @@ async function refreshClients(){
       <td class="mono down" data-label="Download ↓">${fmtB(p.out)}</td>
       <td class="mono" data-label="Total"><b>${fmtB(p.total)}</b></td>`;
     tb.appendChild(tr)})}
+
+/* ---------- monthly traffic & data packages ---------- */
+let mtOpen=localStorage.getItem('td_mt')!=='0';
+function setMtFold(open){mtOpen=open;localStorage.setItem('td_mt',open?'1':'0');
+  $('mt-body').style.display=open?'':'none';
+  $('mt-caret').textContent=open?'▾':'▸';}
+function sday(ts,off,yr){ // calendar day of an epoch in the server's reset time zone
+  const d=new Date((ts+off*3600)*1000);
+  return d.toLocaleDateString([],{month:'short',day:'numeric',timeZone:'UTC',...(yr?{year:'numeric'}:{})})}
+
+/* current period: every pool in the order it is used up (packages first, base quota last) */
+function renderAllowance(){
+  const s=srv();if(!s||!s.allowance)return;
+  const a=s.allowance,b=a.base,off=+s.settings.tz_offset;
+  const row=(name,used,cap,num,meta,cls,bonus)=>{
+    const pc=cap?Math.min(100,100*used/cap):0;
+    return `<div class="arow ${cls||''}"><div class="a-name">${name}</div>
+      <div class="a-bar">${cap?`<div class="bar"><i class="${bonus?'bonus':(pc>85?'hot':'')}" style="width:${pc}%"></i></div>`:''}</div>
+      <div class="a-num mono">${num}</div><div class="a-meta">${meta}</div></div>`};
+  const ord={active:0,pending:1,expired:2};
+  const pk=[...a.packages].sort((x,y)=>ord[x.state]-ord[y.state]||(x.kind<y.kind?-1:x.kind>y.kind?1:0)
+    ||((x.period?x.period.end:0)-(y.period?y.period.end:0)));
+  let h='';
+  pk.forEach(p=>{
+    const valid=(p.start||p.end)?` · valid ${esc(p.start||'…')} → ${esc(p.end||'…')}`:'';
+    if(p.kind==='deduction'){
+      h+=row(`${esc(p.name||'Deduction')}<span class="tag">deduction</span>`,0,0,`−${fmtB(-p.cap)} from the base quota`,
+        (p.state==='active'?'applies every billing period':p.state)+valid,p.state==='active'?'':'off');return}
+    if(p.state!=='active'){
+      h+=row(`${esc(p.name||'Data package')}<span class="tag">${p.state}</span>`,0,0,fmtB(p.cap),
+        p.state==='pending'?'starts '+esc(p.start):'ended '+esc(p.end),'off');return}
+    h+=row(`${esc(p.name||'Data package')}<span class="tag bonus">bonus</span>`,p.used,p.cap,
+      `${fmtB(p.used)} of ${fmtB(p.cap)} · <b>${fmtB(p.left)} left</b>`,
+      `${p.reset_day?'own reset, day '+p.reset_day:'resets with billing period'} · next ${sday(p.period.end,off)} (${p.days_left}d)`
+        +(p.end?' · last day '+esc(p.end):''),'',true)});
+  const bmeta=`resets day ${s.settings.reset_day} · next ${sday(s.period.end,off)} (${s.period.days_left}d)`;
+  if(b.quota)h+=row('Base quota'+(b.adjust?`<span class="tag">${fmtB(b.quota)} − ${fmtB(-b.adjust)}</span>`:''),b.used,b.cap,
+    `${fmtB(b.used)} of ${fmtB(b.cap)} · <b>${b.over?fmtB(b.over)+' over':fmtB(b.left)+' left'}</b>`,bmeta);
+  else h+=row('Base quota',0,0,`${fmtB(b.used)} used · no quota set`,bmeta);
+  $('mt-allow').innerHTML=h;
+  const nact=a.packages.filter(p=>p.kind==='bonus'&&p.state==='active').length;
+  $('mt-order').textContent=nact?'Used in this order: data packages first (soonest reset first), then the base quota.':'';
+  $('mt-note').textContent=`${s.name} · ${fmtB(s.usage.total)} this period`+(b.quota?` · ${fmtB(a.left)} left`:'')
+    +(nact?` · ${nact} active package${nact===1?'':'s'}`:'')}
+
+/* history: totals of the current and previous billing periods */
+async function refreshPeriods(){
+  const s=srv();if(!s)return;const sid=s.id;
+  let d;try{d=await (await api('/api/periods?server='+encodeURIComponent(sid)+'&n=12')).json()}catch(e){return}
+  if(sid!==sel||!d.periods)return;   // selection changed while loading
+  const off=+d.tz_offset,q=d.quota_bytes,tb=$('mt-rows');tb.innerHTML='';
+  const thisYear=new Date((Date.now()/1000+off*3600)*1000).getUTCFullYear();
+  d.periods.forEach(p=>{
+    const yr=new Date((p.start+off*3600)*1000).getUTCFullYear()!==thisYear;
+    const pc=q?100*p.total/q:0;
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td data-label="Billing period">${sday(p.start,off,yr)} – ${sday(p.end-86400,off,yr)}${p.current?'<span class="tag bonus">current</span>':''}${p.partial?'<span class="tag" title="Recording started during this period">partial</span>':''}</td>
+      <td class="mono down" data-label="Received ↓">${fmtB(p.in)}</td><td class="mono up" data-label="Sent ↑">${fmtB(p.out)}</td>
+      <td class="mono" data-label="Total"><b>${fmtB(p.total)}</b></td>
+      <td data-label="Of base quota">${q?`<span class="pctbar"><i style="width:${Math.min(100,pc)}%"></i></span><span class="mono" style="color:var(--muted);font-size:.76rem">${pc.toFixed(1)}%</span>`:'<span class="sub">no quota</span>'}</td>`;
+    tb.appendChild(tr)})}
+
+/* package editor (Settings) — pkgDraft is saved together with the server settings */
+let pkgDraft=[];
+function srvToday(){const s=srv();return new Date((OV.now+(+s.settings.tz_offset)*3600)*1000).toISOString().slice(0,10)}
+function renderPkgs(){
+  const box=$('pkg-list');box.innerHTML='';
+  if(!pkgDraft.length){box.innerHTML='<div class="hint">No packages on this server.</div>';return}
+  let opts='<option value="0">With billing period</option>';
+  for(let d=1;d<=31;d++)opts+=`<option value="${d}">Own day: ${d}</option>`;
+  pkgDraft.forEach((p,i)=>{
+    const el=document.createElement('div');el.className='pkg';
+    el.innerHTML=`<div class="pkg-r"><div><label>Name</label><input type="text" maxlength="40" placeholder="e.g. Black Friday bonus" data-k="name"></div>
+        <button class="xbtn" title="Remove this package" style="flex:0 0 auto;margin-bottom:4px">✕</button></div>
+      <div class="pkg-r"><div><label>Size (GB)</label><input type="number" step="any" placeholder="e.g. 200" data-k="gb"></div>
+        <div><label>Resets</label><select data-k="reset_day">${opts}</select></div></div>
+      <div class="pkg-r"><div><label>Valid from (optional)</label><input type="date" data-k="start"></div>
+        <div><label>Last valid day (optional)</label><input type="date" data-k="end"></div></div>`;
+    const rs=el.querySelector('select');
+    const syncNeg=()=>{const neg=parseFloat(p.gb)<0;rs.disabled=neg;if(neg){rs.value='0';p.reset_day=0}};
+    el.querySelectorAll('[data-k]').forEach(inp=>{const k=inp.dataset.k;
+      inp.value=p[k]==null?'':p[k];
+      inp.addEventListener('input',()=>{p[k]=k==='reset_day'?+inp.value:inp.value;if(k==='gb')syncNeg()})});
+    syncNeg();
+    el.querySelector('.xbtn').onclick=()=>{pkgDraft.splice(i,1);renderPkgs()};
+    box.appendChild(el)})}
+function addPkg(){
+  if(pkgDraft.length>=24){toast('At most 24 packages per server');return}
+  pkgDraft.push({id:'',name:'',gb:'',reset_day:0,start:srvToday(),end:''});renderPkgs();
+  const last=$('pkg-list').lastElementChild;
+  if(last){last.scrollIntoView({block:'nearest'});last.querySelector('input').focus()}}
+function collectPkgs(){ // -> validated list, or null after showing why not
+  const out=[];
+  for(const p of pkgDraft){
+    const g=parseFloat(p.gb);
+    if(!g){toast('Each package needs a size in GB (negative = deduction)');return null}
+    if(p.start&&p.end&&p.end<p.start){toast('“Last valid day” is before “Valid from”');return null}
+    out.push({id:p.id||'',name:(p.name||'').trim(),gb:g,reset_day:g<0?0:(+p.reset_day||0),start:p.start||'',end:p.end||''})}
+  return out}
 
 /* ---------- node health ---------- */
 async function refreshHealth(){
@@ -892,7 +1052,7 @@ async function refreshHealth(){
     box.appendChild(row)});}
 
 function renderAll(rebuild){
-  buildServerCards();updateTz();
+  buildServerCards();updateTz();renderAllowance();
   if(!portsPaused)renderPorts();   // paused = freeze the ports table under the user
   if(rebuild)buildChips()}
 
@@ -918,8 +1078,9 @@ async function loadOverview(rebuild=true){
   if(!sel){sel=OV.servers[0].id;entity=sel}
   renderAll(rebuild)}
 
-function openSettings(){
+function openSettings(newPkg){
   const s=srv();$('set-title').textContent=`Settings — ${s.name}`;
+  pkgDraft=(s.settings.packages||[]).map(p=>({...p}));renderPkgs();
   $('set-sub').textContent=`server id: ${s.id} · ${s.kind}`;
   $('set-name').value=s.settings.display_name||'';
   $('set-name').placeholder=s.default_name||'display name';
@@ -936,7 +1097,8 @@ function openSettings(){
   $('ret-m1').value=ret.m1;$('ret-h1').value=ret.h1;$('ret-d1').value=ret.d1;
   $('ret-ips').value=ret.ips;$('ret-health').value=ret.health;
   updateRetWarn();
-  $('settings-ov').classList.add('show')}
+  $('settings-ov').classList.add('show');
+  if(newPkg===true){$('pkg-h').scrollIntoView();addPkg()}}
 function closeSettings(){$('settings-ov').classList.remove('show')}
 
 /* warn when a finite retention is set on a rollup tier the linked archive isn't shipping */
@@ -953,9 +1115,10 @@ function updateRetWarn(){
     ' data — with a finite retention set, those rows are pruned locally WITHOUT being archived (permanent loss). Add these tiers to the archive ship list, or set their retention to 0 (forever).'}
 
 async function saveSettings(){
+  const packages=collectPkgs();if(packages===null)return;
   await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({server:sel,display_name:$('set-name').value,reset_day:+$('set-reset').value,quota_gb:+$('set-quota').value,tz_offset:+$('set-tz').value})});
-  closeSettings();toast('Settings saved');loadOverview(false)}
+    body:JSON.stringify({server:sel,display_name:$('set-name').value,reset_day:+$('set-reset').value,quota_gb:+$('set-quota').value,tz_offset:+$('set-tz').value,packages})});
+  closeSettings();toast('Settings saved');loadOverview(false).then(refreshPeriods)}
 
 async function changePassword(){
   const cur=$('pw-cur').value,nw=$('pw-new').value,nw2=$('pw-new2').value;
@@ -1002,6 +1165,7 @@ $('us-gran').addEventListener('change',e=>{usGran=e.target.value;refreshUsage()}
 $('src-all').addEventListener('change',e=>{srcAll=e.target.checked;refreshSources()});
 $('cl-all').addEventListener('change',e=>{clAll=e.target.checked;refreshClients()});
 $('cl-toggle').addEventListener('click',()=>setClFold(!clOpen));   // folded by default on every load
+$('mt-toggle').addEventListener('click',()=>setMtFold(!mtOpen));setMtFold(mtOpen);   // remembered per browser
 ['ret-m1','ret-h1','ret-d1'].forEach(id=>$(id).addEventListener('input',updateRetWarn));
 applyView();
 buildSegs();
